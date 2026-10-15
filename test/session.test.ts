@@ -158,4 +158,19 @@ describe.skipIf(process.platform === "win32")("Session protocol", () => {
 			s.reset();
 		}
 	});
+
+	test("an idle session is stopped and the next run reports why", async () => {
+		const s = new Session(shEngine(), { idleMs: 1 });
+		try {
+			await run(s, "x=1");
+			// Real delay on purpose: the 1 ms idle timer was armed before this sleep, and timers
+			// fire in deadline order, so it has always fired by the time the sleep resolves.
+			await Bun.sleep(20);
+			const r = await run(s, 'echo "${x:-unset}"');
+			expect(r.output).toBe("unset\n");
+			expect(r.notices.join(" ")).toContain("without calls");
+		} finally {
+			s.reset();
+		}
+	});
 });

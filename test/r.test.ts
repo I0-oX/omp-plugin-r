@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { findR, rEngine } from "../src/r";
-import { Session } from "../src/session";
+import { findChangedFiles } from "../src/changed-files";
+import { Session, SessionLost } from "../src/session";
 
 const hasR = findR() !== undefined;
 const run = (s: Session, code: string, timeoutMs = 60_000) => s.run(code, { cwd: process.cwd(), timeoutMs });
@@ -95,14 +96,45 @@ describe.skipIf(!hasR)("R engine", () => {
 		}
 	});
 
-	test("timeout discards the session; the next call is fresh and says so", async () => {
+	test("a timeout interrupts the cell and keeps the session's objects", async () => {
 		const s = new Session(rEngine);
 		try {
 			await run(s, "x <- 1");
-			await run(s, "Sys.sleep(30)", 700).catch(() => undefined);
+			const r = await run(s, 'cat("before\\n"); Sys.sleep(30); cat("not reached\\n")', 700);
+			expect(r.interrupted).toContain("timed out");
+			expect(r.output).toContain("before");
+			expect(r.output).not.toContain("not reached");
+			const after = await run(s, "exists('x')");
+			expect(after.output).toContain("TRUE");
+			expect(after.notices).toEqual([]);
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("code that ignores the interrupt is killed after the grace period and the loss is reported", async () => {
+		const s = new Session(rEngine, { interruptGraceMs: 300 });
+		try {
+			await run(s, "x <- 1");
+			// tryCatch swallowing the interrupt inside a loop: the cell never stops on its own.
+			const err = await run(s, "repeat tryCatch(Sys.sleep(30), interrupt = function(i) NULL)", 500).catch(e => e);
+			expect(err).toBeInstanceOf(SessionLost);
+			expect(err.message).toContain("did not stop");
 			const after = await run(s, "exists('x')");
 			expect(after.output).toContain("FALSE");
 			expect(after.notices.join(" ")).toContain("lost");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("startedAt identifies files the cell wrote", async () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "omp-r-files-")));
+		writeFileSync(join(dir, "old.csv"), "a\n");
+		const s = new Session(rEngine);
+		try {
+			const r = await s.run('write.csv(mtcars, "new.csv")', { cwd: dir, timeoutMs: 60_000 });
+			expect((await findChangedFiles(dir, r.startedAt)).paths).toEqual(["new.csv"]);
 		} finally {
 			s.reset();
 		}

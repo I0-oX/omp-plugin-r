@@ -70,6 +70,13 @@ local({
   omp$.omp_run <- function(ctl) {
     a <- readLines(ctl, encoding = "UTF-8", warn = FALSE)
     status <- 0L
+    # on.exit: the marker is printed however the cell ends, including an interrupt.
+    on.exit({
+      omp$unsink()
+      graphics.off()
+      cat("\n", sprintf("<<OMP-END %s %d>>", a[2], status), "\n", sep = "")
+      flush(stdout())
+    })
     cwd <- omp$unhex(a[4])
     omp$plotdir <- a[3]
     moved <- tryCatch({ setwd(cwd); TRUE }, error = function(e) FALSE)
@@ -90,15 +97,12 @@ local({
           omp$unsink()
           cat(omp$fmt("Error", e), "\n", sep = "")
           status <<- 1L
-        })
+        },
+        interrupt = function(i) status <<- 1L)
     } else {
       cat("Error: cannot change working directory to '", cwd, "'\n", sep = "")
       status <- 1L
     }
-    omp$unsink()
-    graphics.off()
-    cat("\n", sprintf("<<OMP-END %s %d>>", a[2], status), "\n", sep = "")
-    flush(stdout())
     invisible(NULL)
   }
   attach(omp, name = "omp-plugin", warn.conflicts = FALSE)
@@ -120,6 +124,8 @@ export const rEngine: Engine = {
 		const ctl = join(run.dir, "ctl.txt");
 		const cwdHex = Buffer.from(run.cwd, "utf8").toString("hex");
 		await writeFile(ctl, [run.script, run.token, run.plotDir, cwdHex].join("\n"), "utf8");
-		return `.omp_run(${JSON.stringify(ctl)})\n`;
+		// The outer tryCatch keeps an interrupt landing outside the cell from reaching
+		// the top level, where non-interactive R would exit.
+		return `tryCatch(.omp_run(${JSON.stringify(ctl)}), interrupt = function(i) invisible(NULL))\n`;
 	},
 };

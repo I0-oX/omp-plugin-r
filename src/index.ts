@@ -3,6 +3,8 @@ import { findR, rEngine } from "./r";
 import { EngineUnavailable, Session, SessionLost } from "./session";
 
 const DEFAULT_TIMEOUT_S = 120;
+// setTimeout overflows (fires after ~1 ms) above 2^31-1 ms, so larger values would kill the session at once.
+const MAX_TIMEOUT_S = 2_147_483;
 const MAX_PLOTS = 8;
 const UPDATE_INTERVAL_MS = 100;
 
@@ -31,7 +33,12 @@ export default function statsPlugin(pi: ExtensionAPI) {
 		approval: "exec",
 		parameters: z.object({
 			code: z.string().describe("R code to run; may span multiple lines"),
-			timeout: z.number().optional().describe(`Seconds before the call is aborted (default ${DEFAULT_TIMEOUT_S}, 0 = no limit)`),
+			timeout: z
+				.number()
+				.min(0)
+				.max(MAX_TIMEOUT_S)
+				.optional()
+				.describe(`Seconds before the call is aborted (default ${DEFAULT_TIMEOUT_S}, 0 = no limit)`),
 			reset: z.boolean().optional().describe("Discard the existing R session (all objects) before running"),
 		}),
 

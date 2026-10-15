@@ -30,48 +30,59 @@ export function findR(): string | undefined {
  * (script, cwd, token, plot dir), sources the script with auto-printing, converts errors
  * and warnings to text, then prints the end marker. Plot files carry a session-wide
  * counter so a user-issued `dev.off()` never makes a later plot overwrite an earlier one.
+ *
+ * The helpers live in an environment attached to the search path rather than in the
+ * global environment, so `rm(list = ls(all.names = TRUE))` in user code cannot delete
+ * them. Any `sink()` the user left open is closed before output is written, otherwise
+ * the end marker would vanish into the sink file.
  */
 const BOOTSTRAP = String.raw`
 options(width = 100, warn = 1, device = NULL)
 if (!isTRUE(l10n_info()[["UTF-8"]])) invisible(try(Sys.setlocale("LC_CTYPE", "C.UTF-8"), silent = TRUE))
 sink(stdout(), type = "message")
-.omp <- new.env()
-.omp$plots <- 0L
-.omp_fmt <- function(kind, cnd) {
-  call <- conditionCall(cnd)
-  where <- if (is.null(call)) "" else paste(deparse(call, nlines = 1L), collapse = " ")
-  if (nzchar(where) && !startsWith(where, "eval(ei")) {
-    paste0(kind, " in ", where, " : ", conditionMessage(cnd))
-  } else {
-    paste0(kind, ": ", conditionMessage(cnd))
+local({
+  omp <- new.env()
+  omp$plots <- 0L
+  omp$unsink <- function() while (sink.number() > 0L) sink()
+  omp$fmt <- function(kind, cnd) {
+    call <- conditionCall(cnd)
+    where <- if (is.null(call)) "" else paste(deparse(call, nlines = 1L), collapse = " ")
+    if (nzchar(where) && !startsWith(where, "eval(ei")) {
+      paste0(kind, " in ", where, " : ", conditionMessage(cnd))
+    } else {
+      paste0(kind, ": ", conditionMessage(cnd))
+    }
   }
-}
-.omp_run <- function(ctl) {
-  a <- readLines(ctl, encoding = "UTF-8", warn = FALSE)
-  status <- 0L
-  try(setwd(a[2]), silent = TRUE)
-  .omp$plotdir <- a[4]
-  options(device = function(...) {
-    .omp$plots <- .omp$plots + 1L
-    png(filename = file.path(.omp$plotdir, sprintf("plot-%04d-%%03d.png", .omp$plots)),
-        width = 900, height = 600, res = 110)
-  })
-  tryCatch(
-    withCallingHandlers(
-      source(a[1], local = globalenv(), echo = FALSE, print.eval = TRUE, keep.source = FALSE),
-      warning = function(w) {
-        cat(.omp_fmt("Warning", w), "\n", sep = "")
-        invokeRestart("muffleWarning")
-      }),
-    error = function(e) {
-      cat(.omp_fmt("Error", e), "\n", sep = "")
-      status <<- 1L
+  omp$.omp_run <- function(ctl) {
+    a <- readLines(ctl, encoding = "UTF-8", warn = FALSE)
+    status <- 0L
+    try(setwd(a[2]), silent = TRUE)
+    omp$plotdir <- a[4]
+    options(device = function(...) {
+      omp$plots <- omp$plots + 1L
+      png(filename = file.path(omp$plotdir, sprintf("plot-%04d-%%03d.png", omp$plots)),
+          width = 900, height = 600, res = 110)
     })
-  graphics.off()
-  cat("\n", sprintf("<<OMP-END %s %d>>", a[3], status), "\n", sep = "")
-  flush(stdout())
-  invisible(NULL)
-}
+    tryCatch(
+      withCallingHandlers(
+        source(a[1], local = globalenv(), echo = FALSE, print.eval = TRUE, keep.source = FALSE),
+        warning = function(w) {
+          cat(omp$fmt("Warning", w), "\n", sep = "")
+          invokeRestart("muffleWarning")
+        }),
+      error = function(e) {
+        omp$unsink()
+        cat(omp$fmt("Error", e), "\n", sep = "")
+        status <<- 1L
+      })
+    omp$unsink()
+    graphics.off()
+    cat("\n", sprintf("<<OMP-END %s %d>>", a[3], status), "\n", sep = "")
+    flush(stdout())
+    invisible(NULL)
+  }
+  attach(omp, name = "omp-plugin", warn.conflicts = FALSE)
+})
 `;
 
 export const rEngine: Engine = {

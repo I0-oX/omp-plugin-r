@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 /** Everything an engine needs to run one cell. All paths are absolute. */
 export interface Run {
@@ -121,6 +122,7 @@ export class Session {
 	#chain: Promise<unknown> = Promise.resolve();
 	#onData: ((chunk: string) => void) | undefined;
 	#onExit: ((why: string) => void) | undefined;
+	#deathReason: string | undefined;
 
 	constructor(readonly engine: Engine) {}
 
@@ -131,18 +133,26 @@ export class Session {
 		return next;
 	}
 
-	/** Discard the process and all state; the next run reports the loss. */
+	/** Discard the process and all state, failing any in-flight cell. The next run reports the loss. */
 	kill(): void {
-		const proc = this.#proc;
-		this.#proc = undefined;
-		live.delete(this);
-		if (proc) killTree(proc);
+		if (!this.#proc) return;
+		this.#terminate();
+		this.#lost = true;
+		this.#deathReason = `${this.engine.name} session was terminated`;
+		this.#onExit?.(this.#deathReason);
 	}
 
 	/** Like kill(), but the next run is not reported as a lost session. */
 	reset(): void {
 		this.kill();
 		this.#lost = false;
+	}
+
+	#terminate(): void {
+		const proc = this.#proc;
+		this.#proc = undefined;
+		live.delete(this);
+		if (proc) killTree(proc);
 	}
 
 	#start(cwd: string): void {
@@ -154,6 +164,7 @@ export class Session {
 			windowsHide: true,
 		});
 		this.#proc = proc;
+		this.#deathReason = undefined;
 		live.add(this);
 		if (!exitHookInstalled) {
 			exitHookInstalled = true;
@@ -161,9 +172,10 @@ export class Session {
 				for (const session of live) session.kill();
 			});
 		}
-		const feed = (chunk: Buffer) => this.#onData?.(chunk.toString("utf8"));
-		proc.stdout?.on("data", feed);
-		proc.stderr?.on("data", feed);
+		// One decoder per stream so multi-byte characters split across chunks stay intact.
+		const feed = (decoder: StringDecoder) => (chunk: Buffer) => this.#onData?.(decoder.write(chunk));
+		proc.stdout?.on("data", feed(new StringDecoder("utf8")));
+		proc.stderr?.on("data", feed(new StringDecoder("utf8")));
 		proc.stdin?.on("error", () => undefined); // EPIPE surfaces through "close"
 		proc.on("error", err => this.#die(proc, `failed to start ${cmd}: ${err.message}`));
 		const gone = (code: number | null, signal: NodeJS.Signals | null) =>
@@ -177,8 +189,9 @@ export class Session {
 	/** The process is gone or unusable; fail any in-flight cell. */
 	#die(proc: ChildProcess, why: string): void {
 		if (this.#proc !== proc) return;
-		this.kill();
+		this.#terminate();
 		this.#lost = true;
+		this.#deathReason = why;
 		this.#onExit?.(why);
 	}
 
@@ -221,6 +234,10 @@ export class Session {
 		stdin: string,
 		opts: RunOptions,
 	): Promise<{ output: string; status: number }> {
+		if (this.#proc !== proc) {
+			// The process died while the cell was being prepared; nothing will ever answer.
+			return Promise.reject(new SessionLost(this.#deathReason ?? `${this.engine.name} is not running`, ""));
+		}
 		const marker = new RegExp(`<<OMP-END ${token}\\s+(-?\\d+)\\s*>>`);
 		const out = new BoundedOutput();
 		const { promise, resolve, reject } = Promise.withResolvers<{ output: string; status: number }>();
@@ -235,7 +252,7 @@ export class Session {
 		const lose = (why: string) => {
 			settle();
 			if (this.#proc === proc) {
-				this.kill();
+				this.#terminate();
 				this.#lost = true;
 			}
 			reject(new SessionLost(why, out.text()));
@@ -264,6 +281,10 @@ export class Session {
 				() => lose(`${this.engine.name} cell timed out after ${opts.timeoutMs! / 1000}s`),
 				opts.timeoutMs,
 			);
+		}
+		if (opts.signal?.aborted) {
+			onAbort();
+			return promise;
 		}
 		proc.stdin?.write(stdin);
 		return promise;

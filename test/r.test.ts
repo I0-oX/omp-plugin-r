@@ -107,4 +107,29 @@ describe.skipIf(!hasR)("R engine", () => {
 			s.reset();
 		}
 	});
+
+	test("clearing the workspace with rm(list = ls(all.names = TRUE)) does not break the session", async () => {
+		const s = new Session(rEngine);
+		try {
+			await run(s, "a <- 1");
+			await run(s, "rm(list = ls(all.names = TRUE))");
+			const r = await run(s, "exists('a'); 1 + 1");
+			expect(r.status).toBe(0);
+			expect(r.output).toContain("[1] 2");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("a sink() left open by user code is closed so the end marker is still seen", async () => {
+		const s = new Session(rEngine);
+		try {
+			const hidden = await run(s, `sink(tempfile()); cat("into the sink")`);
+			expect(hidden.status).toBe(0);
+			expect(hidden.output).not.toContain("into the sink");
+			expect((await run(s, 'cat("visible")')).output).toBe("visible");
+		} finally {
+			s.reset();
+		}
+	});
 });

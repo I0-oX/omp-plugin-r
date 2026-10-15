@@ -126,4 +126,36 @@ describe.skipIf(process.platform === "win32")("Session protocol", () => {
 			s.reset();
 		}
 	});
+
+	test("reset() while a cell is running rejects that cell and does not wedge the queue", async () => {
+		const s = new Session(shEngine());
+		try {
+			const started = (text: string) => text.includes("started") && s.reset();
+			const err = await s
+				.run("echo started; sleep 30", { cwd: process.cwd(), onOutput: started })
+				.catch(e => e);
+			expect(err).toBeInstanceOf(SessionLost);
+			expect((await run(s, "echo again")).output).toBe("again\n");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("an interpreter that cannot start fails the cell instead of hanging", async () => {
+		const s = new Session({ ...shEngine(), command: () => ({ cmd: "/nonexistent/interpreter", args: [] }) });
+		const err = await run(s, "echo hi").catch(e => e);
+		expect(err).toBeInstanceOf(SessionLost);
+		expect(err.message).toContain("failed to start");
+	});
+
+	test("multi-byte characters split across output chunks stay intact", async () => {
+		const s = new Session(shEngine());
+		try {
+			// "é" (C3 A9) written as two separate writes, forcing a chunk boundary inside the character.
+			const r = await run(s, "printf '\\303'; sleep 0.2; printf '\\251\\n'");
+			expect(r.output).toBe("é\n");
+		} finally {
+			s.reset();
+		}
+	});
 });

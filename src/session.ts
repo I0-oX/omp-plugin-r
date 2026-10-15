@@ -208,7 +208,11 @@ export class Session {
 			});
 		}
 		// One decoder per stream so multi-byte characters split across chunks stay intact.
-		const feed = (decoder: StringDecoder) => (chunk: Buffer) => this.#onData?.(decoder.write(chunk));
+		// Output from a process we already replaced (e.g. a grandchild holding its pipes) is dropped.
+		const feed = (decoder: StringDecoder) => (chunk: Buffer) => {
+			const text = decoder.write(chunk);
+			if (this.#proc === proc) this.#onData?.(text);
+		};
 		proc.stdout?.on("data", feed(new StringDecoder("utf8")));
 		proc.stderr?.on("data", feed(new StringDecoder("utf8")));
 		proc.stdin?.on("error", () => undefined); // EPIPE surfaces through "close"
@@ -230,6 +234,14 @@ export class Session {
 
 	async #run(code: string, opts: RunOptions): Promise<RunResult> {
 		clearTimeout(this.#idleTimer);
+		try {
+			return await this.#runCell(code, opts);
+		} finally {
+			this.#scheduleIdle();
+		}
+	}
+
+	async #runCell(code: string, opts: RunOptions): Promise<RunResult> {
 		opts.signal?.throwIfAborted();
 		const notices: string[] = [];
 		if (!this.#proc) {
@@ -263,7 +275,6 @@ export class Session {
 			return { output, status, plots, notices, startedAt, interrupted };
 		} finally {
 			await rm(dir, { recursive: true, force: true });
-			this.#scheduleIdle();
 		}
 	}
 

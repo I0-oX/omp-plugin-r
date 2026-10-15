@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -16,13 +16,30 @@ function tree(files: string[]): string {
 const HOUR_AGO = Date.now() / 1000 - 3600;
 
 describe("findChangedFiles", () => {
-	test("reports files modified since the reference, nested ones included, and not older files", async () => {
-		const root = tree(["old.csv", "new.csv", "out/fig.pdf", "out/old.txt"]);
+	test("reports files changed after the reference, nested ones included, and not older files", async () => {
+		const root = tree(["old.csv", "out/old.txt"]);
 		utimesSync(join(root, "old.csv"), HOUR_AGO, HOUR_AGO);
-		utimesSync(join(root, "out/old.txt"), HOUR_AGO, HOUR_AGO);
-		const { paths, partial } = await findChangedFiles(root, Date.now() - 60_000);
+		// Real delay on purpose: file timestamps come from a coarse kernel clock, so the
+		// reference must fall in a later tick than the setup writes (whose ctime is "now").
+		await Bun.sleep(20);
+		// Reference from the filesystem clock, taken after the old files were last touched.
+		const ref = join(mkdtempSync(join(tmpdir(), "omp-ref-")), "ref");
+		writeFileSync(ref, "");
+		const since = statSync(ref).mtimeMs;
+		writeFileSync(join(root, "new.csv"), "x");
+		mkdirSync(join(root, "out"), { recursive: true });
+		writeFileSync(join(root, "out/fig.pdf"), "x");
+		const { paths, partial } = await findChangedFiles(root, since);
 		expect(paths).toEqual(["new.csv", "out/fig.pdf"]);
 		expect(partial).toBe(false);
+	});
+
+	test("a file created with an old mtime (copy, download) is still reported", async () => {
+		const root = tree([]);
+		const since = Date.now() - 60_000;
+		writeFileSync(join(root, "copied.csv"), "x");
+		utimesSync(join(root, "copied.csv"), HOUR_AGO, HOUR_AGO);
+		expect((await findChangedFiles(root, since)).paths).toEqual(["copied.csv"]);
 	});
 
 	test("skips dependency and dot directories", async () => {

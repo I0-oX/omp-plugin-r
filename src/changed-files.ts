@@ -42,7 +42,8 @@ export async function findChangedFiles(root: string, sinceMs: number, maxEntries
 		}
 		const stats = await Promise.all(files.map(file => stat(file).catch(() => undefined)));
 		stats.forEach((s, j) => {
-			if (s && s.mtimeMs >= sinceMs) paths.push(relative(root, files[j]!));
+			// ctime too: a copy or download can keep an old mtime but always gets a fresh ctime.
+			if (s && Math.max(s.mtimeMs, s.ctimeMs) >= sinceMs) paths.push(relative(root, files[j]!));
 		});
 	}
 	return { paths: paths.sort(), partial };

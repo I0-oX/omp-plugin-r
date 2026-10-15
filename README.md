@@ -62,7 +62,7 @@ Each cell is written to a temp file and the R process, started once with `R --va
 bun test
 ```
 
-`test/session.test.ts` exercises the protocol against a fake `sh` engine; `test/r.test.ts` runs against real R and is skipped when R is absent.
+`test/session.test.ts` exercises the protocol against a fake `sh` engine; `test/changed-files.test.ts` covers the written-files scan; `test/r.test.ts` runs against real R and is skipped when R is absent.
 
 ## Not included
 

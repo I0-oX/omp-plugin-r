@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { type Engine, EngineUnavailable } from "./session";
@@ -6,6 +6,7 @@ import { type Engine, EngineUnavailable } from "./session";
 function isExecutable(path: string): boolean {
 	try {
 		accessSync(path, constants.X_OK);
+		if (!statSync(path).isFile()) return false;
 		return true;
 	} catch {
 		return false;
@@ -39,10 +40,10 @@ export function findR(): string | undefined {
  * Plot files carry a session-wide counter so a user-issued `dev.off()` never makes a
  * later plot overwrite an earlier one.
  *
- * The helpers live in an environment attached to the search path rather than in the
- * global environment, so `rm(list = ls(all.names = TRUE))` in user code cannot delete
- * them. Any `sink()` the user left open is closed before output is written, otherwise
- * the end marker would vanish into the sink file.
+ * The helpers are reached through `getOption(".omp")` rather than the global environment
+ * or the search path, so `rm(list = ls(all.names = TRUE))` or `detach()` in user code
+ * cannot remove them. Any `sink()` the user left open is closed before output is written,
+ * otherwise the end marker would vanish into the sink file.
  */
 const BOOTSTRAP = String.raw`
 options(width = 100, warn = 1, device = NULL)
@@ -51,7 +52,20 @@ sink(stdout(), type = "message")
 local({
   omp <- new.env()
   omp$plots <- 0L
-  omp$unsink <- function() while (sink.number() > 0L) sink()
+  omp$unsink <- function() {
+    while (sink.number() > 0L) sink()
+    sink(stdout(), type = "message")
+  }
+  # Prints the end marker once per token: from on.exit, or from the outer interrupt
+  # handler when an interrupt lands before on.exit is registered.
+  omp$end <- function(token, status) {
+    if (identical(omp$last, token)) return(invisible(NULL))
+    omp$last <- token
+    omp$unsink()
+    graphics.off()
+    cat("\n", sprintf("<<OMP-END %s %d>>", token, status), "\n", sep = "")
+    flush(stdout())
+  }
   omp$fmt <- function(kind, cnd) {
     call <- conditionCall(cnd)
     where <- if (is.null(call)) "" else paste(deparse(call, nlines = 1L), collapse = " ")
@@ -67,16 +81,10 @@ local({
     Encoding(s) <- "UTF-8"
     s
   }
-  omp$.omp_run <- function(ctl) {
+  omp$run <- function(ctl) {
     a <- readLines(ctl, encoding = "UTF-8", warn = FALSE)
     status <- 0L
-    # on.exit: the marker is printed however the cell ends, including an interrupt.
-    on.exit({
-      omp$unsink()
-      graphics.off()
-      cat("\n", sprintf("<<OMP-END %s %d>>", a[2], status), "\n", sep = "")
-      flush(stdout())
-    })
+    on.exit(omp$end(a[2], status))
     cwd <- omp$unhex(a[4])
     omp$plotdir <- a[3]
     moved <- tryCatch({ setwd(cwd); TRUE }, error = function(e) FALSE)
@@ -105,7 +113,8 @@ local({
     }
     invisible(NULL)
   }
-  attach(omp, name = "omp-plugin", warn.conflicts = FALSE)
+  # Reached through an option, not the search path, so detach() or rm() in user code cannot remove it.
+  options(.omp = omp)
 })
 `;
 
@@ -124,8 +133,9 @@ export const rEngine: Engine = {
 		const ctl = join(run.dir, "ctl.txt");
 		const cwdHex = Buffer.from(run.cwd, "utf8").toString("hex");
 		await writeFile(ctl, [run.script, run.token, run.plotDir, cwdHex].join("\n"), "utf8");
-		// The outer tryCatch keeps an interrupt landing outside the cell from reaching
-		// the top level, where non-interactive R would exit.
-		return `tryCatch(.omp_run(${JSON.stringify(ctl)}), interrupt = function(i) invisible(NULL))\n`;
+		// Interrupts that land outside the cell must not reach the top level, where
+		// non-interactive R would exit; the handler still ends the cell with its marker.
+		const omp = 'getOption(".omp")';
+		return `tryCatch(${omp}$run(${JSON.stringify(ctl)}), interrupt = function(i) ${omp}$end("${run.token}", 1L))\n`;
 	},
 };

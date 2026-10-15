@@ -153,6 +153,43 @@ describe.skipIf(!hasR)("R engine", () => {
 		}
 	});
 
+	test("an interrupt arriving right as a cell starts still keeps the session", async () => {
+		const s = new Session(rEngine, { interruptGraceMs: 1000 });
+		try {
+			await run(s, "x <- 1");
+			// The 2nd cell of a fresh R is slow to start (JIT), so a 5 ms timeout lands before the cell body.
+			for (let i = 0; i < 5; i++) {
+				const r = await run(s, "Sys.sleep(30)", 5);
+				expect(r.interrupted).toContain("timed out");
+			}
+			expect((await run(s, "x")).output).toContain("[1] 1");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("detach() in user code does not break the session", async () => {
+		const s = new Session(rEngine);
+		try {
+			await run(s, "keep <- 1");
+			await run(s, "detach(); detach()");
+			const r = await run(s, "keep + 1");
+			expect(r.output).toContain("[1] 2");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("a message sink left open by user code is reset, so later messages are seen", async () => {
+		const s = new Session(rEngine);
+		try {
+			await run(s, 'zz <- file(tempfile(), open = "wt"); sink(zz, type = "message")');
+			expect((await run(s, 'message("hello")')).output).toContain("hello");
+		} finally {
+			s.reset();
+		}
+	});
+
 	test("a sink() left open by user code is closed so the end marker is still seen", async () => {
 		const s = new Session(rEngine);
 		try {

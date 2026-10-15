@@ -41,6 +41,7 @@ The tool is discoverable rather than always loaded: with omp's `tools.xdev` on (
 - **Errors and warnings** come back as text; an error aborts only that call.
 - Runs in the session's working directory, so `read.csv("data.csv")` works. Files the call creates or modifies there are listed after the output (`[files written: out.csv]`), skipping dot-directories, `node_modules`, `renv` and similar, with the scan capped at 5000 entries.
 - One R process per omp session, cells run one at a time. The process stops after `OMP_R_IDLE_MINUTES` without calls, on `session_shutdown`, and when omp exits. Whenever it was lost, the next call says so.
+- **TUI rendering** matches omp's `eval` cells: a framed cell with status icon, `R` title and duration, the highlighted code, and an `Output` section. Collapsed output shows its last 10 rows (`ctrl+o` expands), errors are drawn in the error colour, and notes (`[files written: …]`, interrupt/error markers) sit under the frame. omp does not export its frame helpers to extensions, so `src/render.ts` redraws the frame from the `Theme`, `@oh-my-pi/pi-tui` and `pi.pi`; it also borrows omp's private framed-block marker from the built-in `ask` renderer so the cell is not padded or tinted. Extension tools get no spinner animation from omp, so the running icon is static.
 
 ### Cancellation and timeouts
 

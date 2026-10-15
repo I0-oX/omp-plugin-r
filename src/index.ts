@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { findChangedFiles } from "./changed-files";
 import { findR, rEngine } from "./r";
 import { EngineUnavailable, Session, SessionLost } from "./session";
+import { createRenderers, type RDetails } from "./render";
 
 const DEFAULT_TIMEOUT_S = 120;
 const DEFAULT_IDLE_MINUTES = 30;
@@ -66,6 +67,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 			}
 			if (params.reset) session.reset();
 
+			const startedMs = Date.now();
 			let lastUpdate = 0;
 			try {
 				const result = await session.run(params.code, {
@@ -76,45 +78,70 @@ export default function statsPlugin(pi: ExtensionAPI) {
 						const now = Date.now();
 						if (now - lastUpdate < UPDATE_INTERVAL_MS) return;
 						lastUpdate = now;
-						onUpdate?.({ content: [{ type: "text", text }], details: {} });
+						onUpdate?.({ content: [{ type: "text", text }], details: { output: text } satisfies RDetails });
 					},
 				});
 
-				const parts = [...result.notices];
-				parts.push(result.output.trim() === "" ? "(no output)" : result.output.replace(/\n+$/, ""));
+				const output = result.output.replace(/\n+$/, "");
+				const notes = [...result.notices];
 				if (result.interrupted) {
-					parts.push(`[${result.interrupted}; R was interrupted and kept its objects]`);
+					notes.push(`[${result.interrupted}; R was interrupted and kept its objects]`);
 				} else if (result.status !== 0) {
-					parts.push("[R reported an error; the session is still alive]");
+					notes.push("[R reported an error; the session is still alive]");
 				}
 				const shown = result.plots.slice(0, MAX_PLOTS);
 				if (result.plots.length > shown.length) {
-					parts.push(`[${result.plots.length - shown.length} further plot(s) not shown]`);
+					notes.push(`[${result.plots.length - shown.length} further plot(s) not shown]`);
 				}
 				const { line, files } = await filesLine(ctx.cwd, result.startedAt);
-				if (line) parts.push(line);
+				if (line) notes.push(line);
+				const text = [
+					...result.notices,
+					result.output.trim() === "" ? "(no output)" : output,
+					...notes.slice(result.notices.length),
+				].join("\n");
+				const details: RDetails = {
+					output: result.output.trim() === "" ? "" : output,
+					notes,
+					durationMs: Date.now() - startedMs,
+					status: result.status,
+					plots: result.plots.length,
+					files,
+					interrupted: result.interrupted,
+				};
 				return {
 					content: [
-						{ type: "text", text: parts.join("\n") },
+						{ type: "text", text },
 						...shown.map(png => ({ type: "image" as const, data: png.toString("base64"), mimeType: "image/png" })),
 					],
-					details: { status: result.status, plots: result.plots.length, files, interrupted: result.interrupted },
+					details,
 					isError: result.status !== 0 || result.interrupted !== undefined,
 				};
 			} catch (err) {
 				if (err instanceof SessionLost) {
-					const parts = err.output.trim() ? [err.output.trim()] : [];
-					parts.push(`${err.message}. The R session was discarded; its objects are gone.`);
+					const output = err.output.trim();
+					const notes = [`${err.message}. The R session was discarded; its objects are gone.`];
 					const { line, files } = await filesLine(ctx.cwd, err.startedAt);
-					if (line) parts.push(line);
-					return { content: [{ type: "text", text: parts.join("\n") }], details: { files }, isError: true };
+					if (line) notes.push(line);
+					const details: RDetails = { output, notes, durationMs: Date.now() - startedMs, files };
+					return {
+						content: [{ type: "text", text: [...(output ? [output] : []), ...notes].join("\n") }],
+						details,
+						isError: true,
+					};
 				}
 				if (err instanceof EngineUnavailable) {
-					return { content: [{ type: "text", text: err.message }], details: {}, isError: true };
+					const details: RDetails = { notes: [err.message], durationMs: Date.now() - startedMs };
+					return { content: [{ type: "text", text: err.message }], details, isError: true };
 				}
 				throw err;
 			}
 		},
+
+		...createRenderers(pi.pi as never),
+		// Not in the public ToolDefinition type, but honoured by omp's tool proxy: once the result
+		// exists it draws the whole cell (code included) and the call preview is dropped, as for eval.
+		...({ mergeCallAndResult: true } as object),
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

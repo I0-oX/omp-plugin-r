@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -130,6 +130,50 @@ describe.skipIf(!hasR)("R engine", () => {
 			expect((await run(s, 'cat("visible")')).output).toBe("visible");
 		} finally {
 			s.reset();
+		}
+	});
+
+	test("a working directory containing a newline works", async () => {
+		const base = realpathSync(mkdtempSync(join(tmpdir(), "omp-r-nl-")));
+		const odd = join(base, "a\nb");
+		mkdirSync(odd);
+		const s = new Session(rEngine);
+		try {
+			const r = await s.run("cat(basename(getwd()))", { cwd: odd, timeoutMs: 60_000 });
+			expect(r.status).toBe(0);
+			expect(r.output).toBe("a\nb");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("a cwd that cannot be entered fails the cell instead of running in the previous directory", async () => {
+		const base = realpathSync(mkdtempSync(join(tmpdir(), "omp-r-gone-")));
+		const here = join(base, "here");
+		const gone = join(base, "gone");
+		mkdirSync(here);
+		mkdirSync(gone);
+		const s = new Session(rEngine);
+		try {
+			await s.run("1", { cwd: here, timeoutMs: 60_000 });
+			rmSync(gone, { recursive: true });
+			const r = await s.run('cat("ran")', { cwd: gone, timeoutMs: 60_000 });
+			expect(r.status).toBe(1);
+			expect(r.output).toContain("cannot change working directory");
+			expect(r.output).not.toContain("ran");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("findR rejects an R_BIN that is not executable", () => {
+		const prev = process.env.R_BIN;
+		process.env.R_BIN = "/nonexistent/R";
+		try {
+			expect(findR()).toBeUndefined();
+		} finally {
+			if (prev === undefined) delete process.env.R_BIN;
+			else process.env.R_BIN = prev;
 		}
 	});
 });

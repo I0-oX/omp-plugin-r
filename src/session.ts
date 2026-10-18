@@ -26,7 +26,7 @@ export interface Engine {
 	/** Extension for the cell script. */
 	scriptExt: string;
 	/** Resolve the interpreter command. Throws `EngineUnavailable` when missing. */
-	command(): { cmd: string; args: string[] };
+	command(): { cmd: string; args: string[]; env?: Record<string, string> };
 	/** Sent to stdin once after the process starts. */
 	bootstrap: string;
 	/**
@@ -192,8 +192,9 @@ export class Session {
 	}
 
 	#start(cwd: string): void {
-		const { cmd, args } = this.engine.command();
+		const { cmd, args, env } = this.engine.command();
 		const proc = spawn(cmd, args, {
+			env: env ? { ...process.env, ...env } : process.env,
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: process.platform !== "win32", // own process group: terminal ^C must not hit it

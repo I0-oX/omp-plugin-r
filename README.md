@@ -2,7 +2,7 @@
 
 An [omp](https://omp.sh) plugin that gives the agent a persistent **R** session as an `r` tool, for statistical analysis, modelling and plotting.
 
-omp's `eval` tool has no extension point for new languages, so this ships as an extension that registers its own tool instead.
+omp has no extension point for new eval languages, so the plugin shadows the built-in `eval` tool: `eval` gains `language: "r"` (see [below](#eval-with-language-r)). Only when eval cannot be shadowed does it register a separate `r` tool instead, never both, so the prompt carries one description of R.
 
 ## Install
 
@@ -27,7 +27,18 @@ The tool is discoverable rather than always loaded: with omp's `tools.xdev` on (
 | `R_BIN` | `R` on `PATH` | R binary to run. |
 | `OMP_R_IDLE_MINUTES` | `30` | Stop the R process after this many minutes without calls; `0` = never. |
 
-## The `r` tool
+## `eval` with `language: "r"`
+
+`eval({ language: "r", code, title?, timeout?, reset? })` runs the cell in a persistent R session (state, plots, files-written notes and interrupt handling as described under [The R tool](#the-r-tool)). `py`/`js` cells are forwarded untouched to omp's native `eval` through `ctx.invokeTool`, so retained kernels, preludes (`ratchet`, `browser`, `archive`, ...), streaming and auto-background keep working.
+
+How it hooks in:
+
+- On `session_start` the plugin reads the native `eval` description and `language` enum from `pi.getAllTools()` (it throws during extension loading), then re-registers `eval` with the enum extended by `"r"` and a short R section appended to the description. Only runtimes the native tool advertises are offered.
+- Fallback: if eval is disabled, already shadowed by another extension, or `@oh-my-pi/pi-tui/tools/eval` cannot be imported (the last also raises a warning), nothing is shadowed and the plugin registers the standalone `r` tool (same session, same behaviour; reached as `xd://r` when `tools.xdev` is on).
+- py/js cells render with omp's own eval renderer (`evalToolRenderer`), R cells with `src/render.ts`. The shadow sets `concurrency: "exclusive"` and `mergeCallAndResult` as the native tool does.
+- Known differences while shadowed: the tool description is a snapshot taken at `session_start`, so a prelude enabled mid-session reaches the model through omp's own notice but not through this text; `hasBuiltInTool("eval")` is false, so omp's built-in renderer is not used and the pending/running spinner animation of py/js cells and the native-terminal (TSP) card are lost; the approval dialog shows generic text instead of eval's cell summary.
+
+## The R tool
 
 | Parameter | Description |
 | --- | --- |
@@ -50,6 +61,7 @@ On timeout or cancel R is interrupted with SIGINT, like Ctrl-C. Interrupts are c
 ### Limits
 
 - R's stdin is the tool's control channel. Code that reads stdin (`scan()`, `readLines("stdin")`) blocks until the timeout. `readline()` is harmless.
+- Code that swallows interrupts (`tryCatch(..., interrupt = )`) or loops forever makes a timeout kill R and lose every object. The tool description tells the model to avoid it, save costly objects with `saveRDS()` first, and set a `timeout` longer than the expected run.
 - Output is bounded to roughly the first 16k and last 32k characters; the middle is elided with a note.
 - The tool has `approval: "exec"`: R can run arbitrary code (`system()`), so it is gated like `bash`.
 

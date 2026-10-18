@@ -126,7 +126,12 @@ export const rEngine: Engine = {
 	command() {
 		const cmd = findR();
 		if (!cmd) throw new EngineUnavailable("R was not found on PATH (set R_BIN to an executable R binary).");
-		return { cmd, args: ["--vanilla", "--no-echo", "--no-save", "--no-restore"] };
+		// Messages, warnings and errors in English whatever the user's locale; LC_CTYPE stays for UTF-8.
+		return {
+			cmd,
+			args: ["--vanilla", "--no-echo", "--no-save", "--no-restore"],
+			env: { LANGUAGE: "en", LC_MESSAGES: "C" },
+		};
 	},
 
 	async stdinFor(run) {

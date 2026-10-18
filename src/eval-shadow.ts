@@ -98,7 +98,7 @@ export function buildDocTopics(host: DocHost, agentId: string | undefined, rDocs
 }
 
 /** Language tokens the native tool advertises this session, or undefined when its schema is not understood. */
-function nativeLanguages(
+export function nativeLanguages(
 	z: ExtensionAPI["zod"],
 	parameters: unknown,
 ): { tokens: string[]; description?: string } | undefined {
@@ -154,7 +154,12 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 
 	const languagesInfo = nativeLanguages(z, native.parameters);
 	// Unparseable native schema: do not guess which runtimes exist; leave eval alone and use the `r` tool.
-	if (!languagesInfo) return false;
+	if (!languagesInfo) {
+		if (ctx.hasUI) {
+			ctx.ui.notify('omp-plugin-r: eval language "r" disabled (native eval schema not understood); using the r tool', "warning");
+		}
+		return false;
+	}
 	const { tokens, description: languageDescription } = languagesInfo;
 	const languages = [...tokens.filter(t => t !== "r"), "r"] as [string, ...string[]];
 	const isR = (args: unknown) => typeof args === "object" && args !== null && "language" in args && args.language === "r";

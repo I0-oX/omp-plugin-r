@@ -168,6 +168,64 @@ describe.skipIf(!hasR)("R engine", () => {
 		}
 	});
 
+	test("an interrupt during interpreter start-up waits for readiness instead of killing R", async () => {
+		for (const timeoutMs of [5, 150]) {
+			const s = new Session(rEngine, { interruptGraceMs: 5000 });
+			try {
+				const r = await run(s, "Sys.sleep(30)", timeoutMs);
+				expect(r.interrupted).toContain("timed out");
+				expect((await run(s, "1 + 1")).output).toContain("[1] 2");
+			} finally {
+				s.reset();
+			}
+		}
+	});
+
+	test("an interrupt that lands during end-of-cell cleanup does not lose the session", async () => {
+		const s = new Session(rEngine, { interruptGraceMs: 5000 });
+		try {
+			await run(s, 'keep <- 1; trace("dev.list", quote(Sys.sleep(1)), print = FALSE)');
+			const r = await run(s, "invisible(1)", 300);
+			expect(r.interrupted).toContain("timed out");
+			expect((await run(s, "keep")).output).toContain("[1] 1");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("warnings honour options(warn) and stay out of capture.output()", async () => {
+		const s = new Session(rEngine);
+		try {
+			const captured = await run(s, 'y <- capture.output(as.integer("a")); cat(length(y), "\\n")');
+			expect(captured.output).toContain("NAs introduced by coercion");
+			expect(captured.output).toContain("1 ");
+
+			const silent = await run(s, 'options(warn = -1); as.integer("b")');
+			expect(silent.output).not.toContain("Warning");
+
+			const strict = await run(s, 'options(warn = 2); as.integer("c")');
+			expect(strict.status).toBe(1);
+			expect(strict.output).toContain("converted from warning");
+		} finally {
+			s.reset();
+		}
+	});
+
+	test("a pdf device the user keeps open across calls is not closed", async () => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "omp-r-pdf-")));
+		const s = new Session(rEngine);
+		try {
+			const first = await s.run('pdf("report.pdf"); plot(1:3)', { cwd: dir, timeoutMs: 60_000 });
+			expect(first.plots).toHaveLength(0);
+			const second = await s.run("plot(4:6); invisible(dev.off())", { cwd: dir, timeoutMs: 60_000 });
+			expect(second.status).toBe(0);
+			expect(second.plots).toHaveLength(0);
+		} finally {
+			s.reset();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("detach() in user code does not break the session", async () => {
 		const s = new Session(rEngine);
 		try {

@@ -51,19 +51,33 @@ export default function statsPlugin(pi: ExtensionAPI) {
 		if (params.reset) session.reset();
 
 		const startedMs = Date.now();
+		// Leading + trailing throttle: the newest output is always delivered, at most once per interval.
 		let lastUpdate = 0;
+		let latest = "";
+		let flushTimer: NodeJS.Timeout | undefined;
+		const push = (text: string) => {
+			lastUpdate = Date.now();
+			onUpdate?.({ content: [{ type: "text", text }], details: { output: text } satisfies RDetails });
+		};
 		try {
+			// Extension tools get no spinner frames; one empty partial result switches the card from "pending" to "running".
+			push("");
 			const result = await session.run(params.code, {
 				cwd: ctx.cwd,
 				signal,
 				timeoutMs: (params.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
 				onOutput: text => {
-					const now = Date.now();
-					if (now - lastUpdate < UPDATE_INTERVAL_MS) return;
-					lastUpdate = now;
-					onUpdate?.({ content: [{ type: "text", text }], details: { output: text } satisfies RDetails });
+					latest = text;
+					if (flushTimer) return;
+					const wait = UPDATE_INTERVAL_MS - (Date.now() - lastUpdate);
+					if (wait <= 0) return push(latest);
+					flushTimer = setTimeout(() => {
+						flushTimer = undefined;
+						push(latest);
+					}, wait);
 				},
 			});
+			clearTimeout(flushTimer);
 
 			const output = result.output.replace(/\n+$/, "");
 			const notes = [...result.notices];
@@ -114,10 +128,12 @@ export default function statsPlugin(pi: ExtensionAPI) {
 				};
 			}
 			if (err instanceof EngineUnavailable) {
-				const details: RDetails = { notes: [err.message], durationMs: Date.now() - startedMs };
+				const details: RDetails = { output: "", notes: [err.message], durationMs: Date.now() - startedMs };
 				return { content: [{ type: "text" as const, text: err.message }], details, isError: true };
 			}
 			throw err;
+		} finally {
+			clearTimeout(flushTimer);
 		}
 	}
 

@@ -1,9 +1,17 @@
 {
 	"name": "omp-plugin-r",
-	"version": "0.1.0",
-	"description": "omp plugin: persistent R session as an `r` tool for statistical analysis",
+	"version": "1.0.0",
+	"description": "omp plugin: persistent R session (eval language \"r\", or an r tool as fallback) for statistics, modelling and plots",
 	"type": "module",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/I0-oX/omp-plugin-r.git"
+	},
+	"homepage": "https://github.com/I0-oX/omp-plugin-r#readme",
+	"bugs": {
+		"url": "https://github.com/I0-oX/omp-plugin-r/issues"
+	},
 	"keywords": ["omp", "omp-plugin", "r", "statistics", "data-analysis"],
 	"omp": {
 		"extensions": ["./src/index.ts"]
@@ -11,5 +19,8 @@
 	"files": ["src", "README.md", "LICENSE"],
 	"scripts": {
 		"test": "bun test"
+	},
+	"devDependencies": {
+		"zod": "^3.25.76"
 	}
 }

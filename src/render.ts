@@ -136,10 +136,11 @@ function frame(header: string, meta: string | undefined, state: State, sections:
 	return rows.map(fit);
 }
 
-/** Carriage returns overwrite within a line (progress bars); keep only the final segment. */
+/** Carriage returns overwrite within a line (progress bars); keep only the final segment. Trailing CRs (CRLF) do not count. */
 function cleanLine(line: string): string {
-	const i = line.lastIndexOf("\r");
-	return replaceTabs(i < 0 ? line : line.slice(i + 1));
+	const s = line.replace(/\r+$/, "");
+	const i = s.lastIndexOf("\r");
+	return replaceTabs(i < 0 ? s : s.slice(i + 1));
 }
 
 export function createRenderers(host: Host) {

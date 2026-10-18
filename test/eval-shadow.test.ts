@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildDocTopics } from "../src/eval-shadow";
+import { z } from "zod";
+import { buildDocTopics, nativeLanguages } from "../src/eval-shadow";
 
 const prelude = (name: string, enabled?: boolean) => ({
 	name,
@@ -54,5 +55,27 @@ describe("buildDocTopics", () => {
 	test("the r topic wins over a native topic of the same name", () => {
 		const topics = buildDocTopics({ getEvalDocTopics: () => ({ r: "native r" }) }, undefined, "plugin R");
 		expect(topics.r).toBe("plugin R");
+	});
+});
+
+describe("nativeLanguages", () => {
+	const lang = (language: Record<string, unknown>) => ({ type: "object", properties: { language, code: { type: "string" } } });
+
+	test("reads enum, const and anyOf-of-const language schemas", () => {
+		expect(nativeLanguages(z, lang({ enum: ["py", "js"], description: "d" }))).toEqual({ tokens: ["py", "js"], description: "d" });
+		expect(nativeLanguages(z, lang({ const: "py" }))?.tokens).toEqual(["py"]);
+		expect(nativeLanguages(z, lang({ anyOf: [{ const: "py" }, { const: "js" }] }))?.tokens).toEqual(["py", "js"]);
+	});
+
+	test("unwraps omptype-style callable schemas through toJsonSchema()", () => {
+		const callable = Object.assign(() => undefined, { toJsonSchema: () => lang({ enum: ["js"] }) });
+		expect(nativeLanguages(z, callable)?.tokens).toEqual(["js"]);
+	});
+
+	test("an unrecognised language schema yields undefined instead of a guess", () => {
+		expect(nativeLanguages(z, lang({ oneOf: [{ type: "string" }] }))).toBeUndefined();
+		expect(nativeLanguages(z, lang({ anyOf: [{ type: "string" }] }))).toBeUndefined();
+		expect(nativeLanguages(z, { type: "object", properties: {} })).toBeUndefined();
+		expect(nativeLanguages(z, undefined)).toBeUndefined();
 	});
 });

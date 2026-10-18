@@ -57,14 +57,30 @@ local({
     sink(stdout(), type = "message")
   }
   # Prints the end marker once per token: from on.exit, or from the outer interrupt
-  # handler when an interrupt lands before on.exit is registered.
+  # handler when an interrupt lands before on.exit is registered. The token is recorded
+  # only after the marker is out, so an interrupt that unwinds the cleanup half way still
+  # gets the marker from the outer handler; suspendInterrupts keeps the cleanup itself whole.
   omp$end <- function(token, status) {
     if (identical(omp$last, token)) return(invisible(NULL))
-    omp$last <- token
-    omp$unsink()
-    graphics.off()
-    cat("\n", sprintf("<<OMP-END %s %d>>", token, status), "\n", sep = "")
-    flush(stdout())
+    suspendInterrupts({
+      omp$unsink()
+      omp$closeDevices()
+      cat("\n", sprintf("<<OMP-END %s %d>>", token, status), "\n", sep = "")
+      flush(stdout())
+      omp$last <- token
+    })
+    invisible(NULL)
+  }
+  # Closes only the devices opened by the plugin's png device, so a pdf() or svg() the
+  # user keeps open across calls stays open.
+  omp$devs <- integer()
+  omp$closeDevices <- function() {
+    open <- dev.list()
+    for (d in omp$devs) {
+      i <- match(d, open)
+      if (!is.na(i) && identical(names(open)[i], "png")) dev.off(d)
+    }
+    omp$devs <- integer()
   }
   omp$fmt <- function(kind, cnd) {
     call <- conditionCall(cnd)
@@ -93,12 +109,17 @@ local({
         omp$plots <- omp$plots + 1L
         png(filename = file.path(omp$plotdir, sprintf("plot-%04d-%%03d.png", omp$plots)),
             width = 900, height = 600, res = 110)
+        omp$devs <- c(omp$devs, dev.cur())
       })
       tryCatch(
         withCallingHandlers(
           source(a[1], local = globalenv(), echo = FALSE, print.eval = TRUE, keep.source = FALSE),
           warning = function(w) {
-            cat(omp$fmt("Warning", w), "\n", sep = "")
+            # Honour options(warn): -1 silences, >= 2 lets R turn the warning into an error.
+            # Written to stderr (the message sink), so a user capture.output()/sink() does not swallow it.
+            level <- getOption("warn", 0L)
+            if (level >= 2L) return()
+            if (level >= 0L) cat(omp$fmt("Warning", w), "\n", sep = "", file = stderr())
             invokeRestart("muffleWarning")
           }),
         error = function(e) {
@@ -116,12 +137,15 @@ local({
   # Reached through an option, not the search path, so detach() or rm() in user code cannot remove it.
   options(.omp = omp)
 })
+cat("<<OMP-READY>>\n")
+flush(stdout())
 `;
 
 export const rEngine: Engine = {
 	name: "R",
 	scriptExt: ".R",
 	bootstrap: BOOTSTRAP,
+	ready: "<<OMP-READY>>",
 
 	command() {
 		const cmd = findR();

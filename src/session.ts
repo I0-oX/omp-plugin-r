@@ -30,6 +30,12 @@ export interface Engine {
 	/** Sent to stdin once after the process starts. */
 	bootstrap: string;
 	/**
+	 * Printed by the bootstrap once the interpreter can survive SIGINT. Output before it is
+	 * dropped, and an interrupt arriving earlier waits for it (a SIGINT during start-up would
+	 * kill the interpreter and lose the session). Omit when the interpreter needs no handshake.
+	 */
+	ready?: string;
+	/**
 	 * Text written to stdin to run `run.script` and then print the end marker. It must
 	 * survive SIGINT: an interrupted cell still prints the marker and the process lives on.
 	 */
@@ -145,6 +151,8 @@ export class Session {
 	#onData: ((chunk: string) => void) | undefined;
 	#onExit: ((why: string) => void) | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
+	/** Resolves once the current process has printed `engine.ready`. */
+	#ready: Promise<void> = Promise.resolve();
 
 	constructor(
 		readonly engine: Engine,
@@ -201,6 +209,10 @@ export class Session {
 			windowsHide: true,
 		});
 		this.#proc = proc;
+		const readyMarker = this.engine.ready;
+		let pending: string | undefined = readyMarker === undefined ? undefined : "";
+		const { promise: ready, resolve: markReady } = Promise.withResolvers<void>();
+		this.#ready = readyMarker === undefined ? Promise.resolve() : ready;
 		live.add(this);
 		if (!exitHookInstalled) {
 			exitHookInstalled = true;
@@ -211,8 +223,17 @@ export class Session {
 		// One decoder per stream so multi-byte characters split across chunks stay intact.
 		// Output from a process we already replaced (e.g. a grandchild holding its pipes) is dropped.
 		const feed = (decoder: StringDecoder) => (chunk: Buffer) => {
-			const text = decoder.write(chunk);
-			if (this.#proc === proc) this.#onData?.(text);
+			let text = decoder.write(chunk);
+			if (this.#proc !== proc) return;
+			if (pending !== undefined && readyMarker !== undefined) {
+				pending += text;
+				const at = pending.indexOf(readyMarker);
+				if (at < 0) return;
+				text = pending.slice(at + readyMarker.length).replace(/^\r?\n/, "");
+				pending = undefined;
+				markReady();
+			}
+			if (text) this.#onData?.(text);
 		};
 		proc.stdout?.on("data", feed(new StringDecoder("utf8")));
 		proc.stderr?.on("data", feed(new StringDecoder("utf8")));
@@ -301,9 +322,11 @@ export class Session {
 		}>();
 		let timer: NodeJS.Timeout | undefined;
 		let interrupted: string | undefined;
+		let finished = false;
 		const grace = this.options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS;
 
 		const settle = () => {
+			finished = true;
 			clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);
 			this.#onData = undefined;
@@ -314,13 +337,19 @@ export class Session {
 			if (interrupted) return;
 			interrupted = why;
 			clearTimeout(timer);
-			signalTree(proc, "SIGINT");
-			timer = setTimeout(() => {
-				settle();
-				const lost = `${why}; ${this.engine.name} did not stop within ${grace / 1000}s of an interrupt and was killed`;
-				if (this.#proc === proc) this.#terminate(lost);
-				reject(new SessionLost(lost, out.text(), startedAt));
-			}, grace);
+			const ready = this.#ready;
+			// Not ready yet: the signal would land during interpreter start-up and kill it.
+			void ready.then(() => {
+				if (finished) return;
+				signalTree(proc, "SIGINT");
+				timer = setTimeout(onGraceExpired, grace);
+			});
+		};
+		const onGraceExpired = () => {
+			settle();
+			const lost = `${interrupted}; ${this.engine.name} did not stop within ${grace / 1000}s of an interrupt and was killed`;
+			if (this.#proc === proc) this.#terminate(lost);
+			reject(new SessionLost(lost, out.text(), startedAt));
 		};
 		const onAbort = () => interrupt(`${this.engine.name} cell cancelled`);
 

@@ -49,26 +49,26 @@ How it hooks in:
 
 - **State persists** across calls: objects, loaded packages, options.
 - **Auto-print** like the console: `summary(fit)`, data frames, ggplot objects.
-- **Plots** (base, ggplot2, lattice) are returned as PNG images. Each plot gets a session-wide unique name, so `dev.off()` never makes a later plot overwrite an earlier one.
-- **Errors and warnings** come back as text; an error aborts only that call.
+- **Plots** (base, ggplot2, lattice) are returned as PNG images, at most 8 per call. Each plot gets a session-wide unique name, so `dev.off()` never makes a later plot overwrite an earlier one. Only the plot devices the plugin opened are closed at the end of a call; a `pdf()` or `svg()` you open stays open across calls.
+- **Errors and warnings** come back as text; an error aborts only that call. Warnings honour `options(warn)` (`-1` silences, `2` turns them into errors) and are written to stderr, so `capture.output()` and `sink()` do not swallow them.
 - Runs in the session's working directory, so `read.csv("data.csv")` works. Files the call creates or modifies there are listed after the output (`[files written: out.csv]`), skipping dot-directories, `node_modules`, `renv` and similar, with the scan capped at 5000 entries.
 - One R process per omp session, cells run one at a time. The process stops after `OMP_R_IDLE_MINUTES` without calls, on `session_shutdown`, and when omp exits. Whenever it was lost, the next call says so.
-- **TUI rendering** matches omp's `eval` cells: a framed cell with status icon, `R` title and duration, the highlighted code, and an `Output` section. Collapsed output shows its last 10 rows (`ctrl+o` expands), errors are drawn in the error colour, and notes (`[files written: …]`, interrupt/error markers) sit under the frame. omp does not export its frame helpers to extensions, so `src/render.ts` redraws the frame from the `Theme`, `@oh-my-pi/pi-tui` and `pi.pi`; it also borrows omp's private framed-block marker from the built-in `ask` renderer so the cell is not padded or tinted. Extension tools get no spinner animation from omp, so the running icon is static.
+- **TUI rendering** matches omp's `eval` cells: a framed cell with status icon, `R` title and duration, the highlighted code, and an `Output` section. Collapsed output shows its last 10 rows (`ctrl+o` expands), errors are drawn in the error colour, and notes (`[files written: …]`, interrupt/error markers) sit under the frame. omp does not export its frame helpers to extensions, so `src/render.ts` redraws the frame from the `Theme`, `@oh-my-pi/pi-tui` and `pi.pi`; it also borrows omp's private framed-block marker from the built-in `ask` renderer so the cell is not padded or tinted. Extension tools get no spinner animation from omp, so the running icon is static; an empty partial result is sent when the cell starts so the card shows "running" rather than "pending".
 
 ### Cancellation and timeouts
 
-On timeout or cancel R is interrupted with SIGINT, like Ctrl-C. Interrupts are checked by `Sys.sleep`, interpreted loops and most R code, so the cell stops at once: the call returns what was produced and the session keeps its objects. Code that does not respond within 2 s (long compiled routines, code that swallows interrupts) is killed; its objects are lost and the next call says so.
+On timeout or cancel R is interrupted with SIGINT, like Ctrl-C. Interrupts are checked by `Sys.sleep`, interpreted loops and most R code, so the cell stops at once: the call returns what was produced and the session keeps its objects. A cancel that arrives while R is still starting waits until the bootstrap has printed its ready marker before signalling, because a SIGINT during start-up would make non-interactive R exit. Code that does not respond within 2 s (long compiled routines, code that swallows interrupts) is killed; its objects are lost and the next call says so.
 
 ### Limits
 
-- R's stdin is the tool's control channel. Code that reads stdin (`scan()`, `readLines("stdin")`) blocks until the timeout. `readline()` is harmless.
+- R's stdin is the tool's control channel. Code that reads stdin (`scan()`, `readLines("stdin")`) blocks, ignores the interrupt, and so is killed after the timeout plus the 2 s grace: every object is lost. `readline()` is harmless.
 - Code that swallows interrupts (`tryCatch(..., interrupt = )`) or loops forever makes a timeout kill R and lose every object. The tool description tells the model to avoid it, save costly objects with `saveRDS()` first, and set a `timeout` longer than the expected run.
 - Output is bounded to roughly the first 16k and last 32k characters; the middle is elided with a note.
 - The tool has `approval: "exec"`: R can run arbitrary code (`system()`), so it is gated like `bash`.
 
 ## How it works
 
-Each cell is written to a temp file and the R process, started once with `R --vanilla --no-echo --no-save --no-restore`, is told to `source()` it with `print.eval = TRUE`. R then prints an end marker `<<OMP-END <token> <status>>>` carrying a random per-run token; the host streams output until it sees that exact token, so user output (or an echoed command) that merely looks like a marker is never mistaken for the end of a cell. Paths and the working directory travel in a control file rather than inside R source, so unusual directory names cannot break quoting.
+Each cell is written to a temp file and the R process, started once with `R --vanilla --no-echo --no-save --no-restore`, is told to `source()` it with `print.eval = TRUE`. After the bootstrap R prints `<<OMP-READY>>`; interrupts wait for it. R then prints an end marker `<<OMP-END <token> <status>>>` carrying a random per-run token; the host streams output until it sees that exact token, so user output (or an echoed command) that merely looks like a marker is never mistaken for the end of a cell. Paths and the working directory travel in a control file rather than inside R source, so unusual directory names cannot break quoting.
 
 ## Development
 
@@ -76,7 +76,7 @@ Each cell is written to a temp file and the R process, started once with `R --va
 bun test
 ```
 
-`test/session.test.ts` exercises the protocol against a fake `sh` engine; `test/changed-files.test.ts` covers the written-files scan; `test/r.test.ts` runs against real R and is skipped when R is absent.
+`test/session.test.ts` exercises the protocol against a fake `sh` engine; `test/changed-files.test.ts` covers the written-files scan; `test/eval-shadow.test.ts` covers the `xd://eval/<topic>` doc builder and the native-schema parser that decides between the eval shadow and the `r` tool; `test/r.test.ts` runs against real R and is skipped when R is absent. Tests import `zod` (a dev dependency; omp supplies it at runtime). Developed against omp 18.12.1, whose private internals the shadow and renderer rely on.
 
 ## Not included
 

@@ -1,6 +1,6 @@
 # omp-plugin-r
 
-An [omp](https://omp.sh) plugin that gives the agent a persistent **R** session as an `r` tool, for statistical analysis, modelling and plotting.
+An [omp](https://omp.sh) plugin that gives the agent a persistent **R** session, as `language: "r"` of the `eval` tool, for statistical analysis, modelling and plotting.
 
 omp has no extension point for new eval languages, so the plugin shadows the built-in `eval` tool: `eval` gains `language: "r"` (see [below](#eval-with-language-r)). Only when eval cannot be shadowed does it register a separate `r` tool instead, never both, so the prompt carries one description of R.
 
@@ -18,7 +18,7 @@ omp plugin link /path/to/omp-plugin-r
 
 Requires `R` on `PATH` (or set `R_BIN` to an executable R binary). If R is not found the plugin registers nothing, so no dead tool is advertised.
 
-The tool is discoverable rather than always loaded: with omp's `tools.xdev` on (the default) the model reaches it as `xd://r`, so its description only costs prompt space when R is used.
+With the standalone `r` tool (fallback only), the tool is discoverable rather than always loaded: with omp's `tools.xdev` on the model reaches it as `xd://r`, so its description only costs prompt space when R is used. Under the `eval` shadow the R notes are a short section of `eval`'s description instead.
 
 ### Configuration
 
@@ -29,14 +29,14 @@ The tool is discoverable rather than always loaded: with omp's `tools.xdev` on (
 
 ## `eval` with `language: "r"`
 
-`eval({ language: "r", code, title?, timeout?, reset? })` runs the cell in a persistent R session (state, plots, files-written notes and interrupt handling as described under [The R tool](#the-r-tool)). `py`/`js` cells are forwarded untouched to omp's native `eval` through `ctx.invokeTool`, so retained kernels, preludes (`ratchet`, `browser`, `archive`, ...), streaming and auto-background keep working.
+`eval({ language: "r", code, title?, timeout?, reset? })` runs the cell in a persistent R session (state, plots, files-written notes and interrupt handling as described under [The R tool](#the-r-tool)). `py`/`js` cells are forwarded to omp's native `eval` through `ctx.invokeTool` (only the native fields `language`, `code`, `title`, `timeout`, `reset`), so retained kernels, preludes (`ratchet`, `browser`, `archive`, ...), streaming and auto-background keep working.
 
 How it hooks in:
 
-- On `session_start` the plugin reads the native `eval` description and `language` enum from `pi.getAllTools()` (it throws during extension loading), then re-registers `eval` with the enum extended by `"r"` and a short R section appended to the description. Only runtimes the native tool advertises are offered.
-- Fallback: if eval is disabled, already shadowed by another extension, or `@oh-my-pi/pi-tui/tools/eval` cannot be imported (the last also raises a warning), nothing is shadowed and the plugin registers the standalone `r` tool (same session, same behaviour; reached as `xd://r` when `tools.xdev` is on).
+- On `session_start` the plugin reads the native `eval` description and `language` schema from `pi.getAllTools()` (it throws during extension loading), then re-registers `eval` with the language list extended by `"r"` and a short R section appended to the description. Only runtimes the native tool advertises are offered.
+- Fallback: if eval is disabled, already shadowed by another extension, its native schema cannot be parsed, shadowing throws, or `@oh-my-pi/pi-tui/tools/eval` cannot be imported (these failures raise a warning when there is a UI), nothing is shadowed and the plugin registers the standalone `r` tool (same session, same behaviour; reached as `xd://r` when `tools.xdev` is on).
 - py/js cells render with omp's own eval renderer (`evalToolRenderer`), R cells with `src/render.ts`. The shadow sets `concurrency: "exclusive"` and `mergeCallAndResult` as the native tool does.
-- Known differences while shadowed: the tool description is a snapshot taken at `session_start`, so a prelude enabled mid-session reaches the model through omp's own notice but not through this text; `hasBuiltInTool("eval")` is false, so omp's built-in renderer is not used and the pending/running spinner animation of py/js cells and the native-terminal (TSP) card are lost; the approval dialog shows generic text instead of eval's cell summary.
+- Known differences while shadowed: the tool description is a snapshot taken at `session_start`, so a prelude enabled mid-session reaches the model through omp's own notice but not through this text; `xd://eval/<topic>` docs (`judge`, `helpers`, prelude docs) cannot be read because omp looks them up on the registered tool; `hasBuiltInTool("eval")` is false, so omp's built-in renderer is not used and the pending/running spinner animation of py/js cells and the native-terminal (TSP) card are lost; `title` is shown for py/js cells only.
 
 ## The R tool
 
@@ -67,7 +67,7 @@ On timeout or cancel R is interrupted with SIGINT, like Ctrl-C. Interrupts are c
 
 ## How it works
 
-Each cell is written to a temp file and the R process, started once with `R --vanilla --no-echo`, is told to `source()` it with `print.eval = TRUE`. R then prints an end marker `<<OMP-END <token> <status>>>` carrying a random per-run token; the host streams output until it sees that exact token, so user output (or an echoed command) that merely looks like a marker is never mistaken for the end of a cell. Paths and the working directory travel in a control file rather than inside R source, so unusual directory names cannot break quoting.
+Each cell is written to a temp file and the R process, started once with `R --vanilla --no-echo --no-save --no-restore`, is told to `source()` it with `print.eval = TRUE`. R then prints an end marker `<<OMP-END <token> <status>>>` carrying a random per-run token; the host streams output until it sees that exact token, so user output (or an echoed command) that merely looks like a marker is never mistaken for the end of a cell. Paths and the working directory travel in a control file rather than inside R source, so unusual directory names cannot break quoting.
 
 ## Development
 

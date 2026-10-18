@@ -3,8 +3,9 @@
  *
  * omp has no extension point for eval languages, but an extension may re-register a built-in
  * tool name and delegate to the original with `ctx.invokeTool`. The shadow therefore runs R
- * itself and forwards py/js cells untouched to the native tool, so retained kernels, preludes
- * (`ratchet`, `browser`, ...), streaming, auto-background and approval keep working.
+ * itself and forwards py/js cells to the native tool, so retained kernels, preludes
+ * (`ratchet`, `browser`, ...), streaming and auto-background keep working. Known gap: `xd://eval/*`
+ * topic docs are unreadable while shadowed (omp looks them up on the registered tool).
  *
  * Call it from `session_start`: `pi.getAllTools()` throws while extensions load, and the native
  * description/schema are copied from it because the shadow replaces them. The description is a
@@ -41,27 +42,34 @@ export interface EvalShadowDeps {
 	renderers: Renderer;
 }
 
-/** Language tokens the native tool advertises this session (`py`, `js`, ...). */
-function nativeLanguages(z: ExtensionAPI["zod"], parameters: unknown): { tokens: string[]; description?: string } {
-	const fallback = { tokens: ["py", "js"] };
+/** Language tokens the native tool advertises this session, or undefined when its schema is not understood. */
+function nativeLanguages(
+	z: ExtensionAPI["zod"],
+	parameters: unknown,
+): { tokens: string[]; description?: string } | undefined {
+	// omptype schemas are callable (functions with a prototype), not plain objects.
 	const schema =
-		typeof parameters === "object" && parameters !== null && "toJsonSchema" in parameters && typeof parameters.toJsonSchema === "function"
+		(typeof parameters === "object" || typeof parameters === "function") &&
+		parameters !== null &&
+		"toJsonSchema" in parameters &&
+		typeof parameters.toJsonSchema === "function"
 			? parameters.toJsonSchema()
 			: parameters;
 	const Native = z.object({
 		properties: z.object({
 			language: z.object({
 				description: z.string().optional(),
+				const: z.string().optional(),
 				enum: z.array(z.string()).optional(),
 				anyOf: z.array(z.object({ const: z.string() })).optional(),
 			}),
 		}),
 	});
 	const parsed = Native.safeParse(schema);
-	if (!parsed.success) return fallback;
-	const { description, enum: values, anyOf } = parsed.data.properties.language;
-	const tokens = values ?? anyOf?.map(alternative => alternative.const) ?? [];
-	return tokens.length > 0 ? { tokens, description } : fallback;
+	if (!parsed.success) return undefined;
+	const { description, const: single, enum: values, anyOf } = parsed.data.properties.language;
+	const tokens = values ?? (single !== undefined ? [single] : anyOf?.map(alternative => alternative.const)) ?? [];
+	return tokens.length > 0 ? { tokens, description } : undefined;
 }
 
 /**
@@ -89,7 +97,10 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 		return false;
 	}
 
-	const { tokens, description: languageDescription } = nativeLanguages(z, native.parameters);
+	const languagesInfo = nativeLanguages(z, native.parameters);
+	// Unparseable native schema: do not guess which runtimes exist; leave eval alone and use the `r` tool.
+	if (!languagesInfo) return false;
+	const { tokens, description: languageDescription } = languagesInfo;
 	const languages = [...tokens.filter(t => t !== "r"), "r"] as [string, ...string[]];
 	const isR = (args: unknown) => typeof args === "object" && args !== null && "language" in args && args.language === "r";
 
@@ -105,7 +116,7 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 			code: z
 				.string()
 				.describe("Code or standalone % command; top-level await works (py/js). For r: plain R code, may span lines."),
-			title: z.string().optional().describe("Short transcript label."),
+			title: z.string().optional().describe("Short transcript label (shown for py/js cells)."),
 			timeout: z
 				.number()
 				.min(0)
@@ -141,8 +152,18 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 			(isR(args) ? deps.renderers : evalRenderer).renderResult(result, options, theme, args) as never,
 
 		// Not in the public ToolDefinition type, but forwarded by omp's tool proxy (own keys of the
-		// definition). `eval` is exclusive within a session and draws call+result as one cell.
-		...({ concurrency: "exclusive", mergeCallAndResult: true } as object),
+		// definition). `eval` is exclusive within a session, draws call+result as one cell, and its
+		// approval dialog shows the code like the native tool's does.
+		...({
+			concurrency: "exclusive",
+			mergeCallAndResult: true,
+			formatApprovalDetails: (args: unknown) => {
+				if (typeof args !== "object" || args === null) return undefined;
+				const language = "language" in args && typeof args.language === "string" ? args.language : "?";
+				const code = "code" in args && typeof args.code === "string" ? args.code : "";
+				return `Language: ${language}\nCode:\n${code.length > 2000 ? `${code.slice(0, 2000)}\n…` : code}`;
+			},
+		} as object),
 	});
 	return true;
 }

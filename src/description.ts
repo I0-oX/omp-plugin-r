@@ -20,7 +20,7 @@ export function describe(idleMinutes: number): string {
 export function describeForEval(idleMinutes: number): string {
 	const idle = idleMinutes > 0 ? ` The R process stops after ${idleMinutes} min without calls.` : "";
 	return `Persistent R session for statistics, modelling and plots. State (objects, packages, options) persists until \`reset: true\` or the process stops; top-level values auto-print like the console; plots (base, ggplot2, lattice) return as PNG.
-- Errors/warnings come back as text and abort only that cell. Runs in the session cwd; files the cell writes are listed after the output.
+- Errors and warnings come back as text; an error aborts only that cell. Runs in the session cwd; files the cell writes are listed after the output.
 - \`timeout\` default ${DEFAULT_TIMEOUT_S} s. On timeout/cancel R is interrupted like Ctrl-C and keeps its objects; code that swallows interrupts (\`tryCatch(..., interrupt=)\`) or never returns gets killed and loses them, so \`saveRDS()\` costly objects first.${idle} A lost process is reported on the next call.
 - Never read stdin (\`readLines("stdin")\`, \`scan()\`).`;
 }

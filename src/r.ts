@@ -126,7 +126,8 @@ export const rEngine: Engine = {
 	command() {
 		const cmd = findR();
 		if (!cmd) throw new EngineUnavailable("R was not found on PATH (set R_BIN to an executable R binary).");
-		// Messages, warnings and errors in English whatever the user's locale; LC_CTYPE stays for UTF-8.
+		// English R messages: LANGUAGE=en wins over a translated LC_ALL on glibc (checked with de_DE.UTF-8);
+		// other platforms are untested. LC_CTYPE is left alone so UTF-8 output keeps working.
 		return {
 			cmd,
 			args: ["--vanilla", "--no-echo", "--no-save", "--no-restore"],

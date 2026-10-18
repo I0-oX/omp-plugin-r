@@ -156,12 +156,17 @@ export default function statsPlugin(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (exposed) return;
 		exposed = true;
-		const shadowed = await shadowEval(pi, ctx, {
-			executeR,
-			rDescription: describeForEval(idleMinutes),
-			defaultTimeoutS: DEFAULT_TIMEOUT_S,
-			renderers: renderers as never,
-		});
+		let shadowed = false;
+		try {
+			shadowed = await shadowEval(pi, ctx, {
+				executeR,
+				rDescription: describeForEval(idleMinutes),
+				defaultTimeoutS: DEFAULT_TIMEOUT_S,
+				renderers: renderers as never,
+			});
+		} catch (err) {
+			if (ctx.hasUI) ctx.ui.notify(`omp-plugin-r: eval shadow failed (${err}); using the r tool`, "warning");
+		}
 		if (!shadowed) registerRTool();
 	});
 

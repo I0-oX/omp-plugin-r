@@ -161,6 +161,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 			shadowed = await shadowEval(pi, ctx, {
 				executeR,
 				rDescription: describeForEval(idleMinutes),
+				rDocs: describe(idleMinutes),
 				defaultTimeoutS: DEFAULT_TIMEOUT_S,
 				renderers: renderers as never,
 			});

@@ -4,8 +4,9 @@
  * omp has no extension point for eval languages, but an extension may re-register a built-in
  * tool name and delegate to the original with `ctx.invokeTool`. The shadow therefore runs R
  * itself and forwards py/js cells to the native tool, so retained kernels, preludes
- * (`ratchet`, `browser`, ...), streaming and auto-background keep working. Known gap: `xd://eval/*`
- * topic docs are unreadable while shadowed (omp looks them up on the registered tool).
+ * (`ratchet`, `browser`, ...), streaming and auto-background keep working. `xd://eval/<topic>`
+ * docs are looked up on the registered tool's `docTopics()`, so the shadow provides it (see
+ * {@link buildDocTopics}).
  *
  * Call it from `session_start`: `pi.getAllTools()` throws while extensions load, and the native
  * description/schema are copied from it because the shadow replaces them. The description is a
@@ -37,9 +38,63 @@ export interface EvalShadowDeps {
 	): Promise<unknown>;
 	/** Text appended to the native eval description. */
 	rDescription: string;
+	/** Full R documentation, served as the `xd://eval/r` topic. */
+	rDocs: string;
 	defaultTimeoutS: number;
 	/** R cell renderers, used when `args.language === "r"`. */
 	renderers: Renderer;
+}
+
+interface DocHost {
+	/** Native `EvalTool` class (`pi.pi.EvalTool`). */
+	EvalTool?: new (session: unknown) => { docTopics?(): Record<string, string> };
+	/** Doc builder fed with a prelude list (`pi.pi.getEvalDocTopics`). */
+	getEvalDocTopics?(options?: object): Record<string, string>;
+	/** Live agents by id (`pi.pi.AgentRegistry`); each entry carries its `AgentSession`. */
+	AgentRegistry?: { global(): { get(id: string): { session?: unknown } | undefined } };
+}
+
+/** Id of the agent running this context. `ctx.agent` is not in the public `ExtensionContext` type, so narrow it at runtime. */
+function agentIdOf(ctx: object): string | undefined {
+	if (!("agent" in ctx) || typeof ctx.agent !== "object" || ctx.agent === null) return undefined;
+	return "id" in ctx.agent && typeof ctx.agent.id === "string" ? ctx.agent.id : undefined;
+}
+
+/** Preludes the session has enabled, one per name, as omp's own `docTopics` lists them. */
+function enabledPreludes(session: unknown): unknown[] {
+	if (typeof session !== "object" || session === null) return [];
+	if (!("getEvalPreludes" in session) || typeof session.getEvalPreludes !== "function") return [];
+	const byName = new Map<string, unknown>();
+	for (const prelude of session.getEvalPreludes() as { name: string; enabled?(): boolean }[]) {
+		if (prelude.enabled?.() !== false) byName.set(prelude.name, prelude);
+	}
+	return [...byName.values()];
+}
+
+/**
+ * `xd://eval/<topic>` docs while shadowed. omp resolves them with `session.getToolByName("eval").docTopics()`;
+ * an extension tool only answers if its definition carries `docTopics` (the tool proxy forwards own keys), and an
+ * extension never sees the session, so it is found through the agent registry. Best first: the native `EvalTool`
+ * on that session (exactly the unshadowed text and topics), then omp's builder fed the session's enabled preludes,
+ * then its prelude-less output, then just `r`. The `r` topic always wins a name clash.
+ */
+export function buildDocTopics(host: DocHost, agentId: string | undefined, rDocs: string): Record<string, string> {
+	let session: unknown;
+	let native: Record<string, string> | undefined;
+	try {
+		session = agentId === undefined ? undefined : host.AgentRegistry?.global().get(agentId)?.session;
+		if (session !== undefined && host.EvalTool) native = new host.EvalTool(session).docTopics?.();
+	} catch {
+		native = undefined;
+	}
+	if (!native) {
+		try {
+			native = host.getEvalDocTopics?.({ preludes: enabledPreludes(session) });
+		} catch {
+			native = undefined;
+		}
+	}
+	return { ...native, r: rDocs };
 }
 
 /** Language tokens the native tool advertises this session, or undefined when its schema is not understood. */
@@ -104,6 +159,9 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 	const languages = [...tokens.filter(t => t !== "r"), "r"] as [string, ...string[]];
 	const isR = (args: unknown) => typeof args === "object" && args !== null && "language" in args && args.language === "r";
 
+	// Read at doc-lookup time, not registration time: the session's tools and enabled preludes change.
+	let latestCtx: ExtensionContext = ctx;
+
 	pi.registerTool({
 		name: "eval",
 		label: "Eval",
@@ -126,6 +184,7 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 		}),
 
 		async execute(_toolCallId, params: EvalArgs, signal, onUpdate, toolCtx) {
+			latestCtx = toolCtx;
 			if (params.language === "r") {
 				return deps.executeR(
 					{ code: params.code, timeout: params.timeout, reset: params.reset },
@@ -152,11 +211,12 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 			(isR(args) ? deps.renderers : evalRenderer).renderResult(result, options, theme, args) as never,
 
 		// Not in the public ToolDefinition type, but forwarded by omp's tool proxy (own keys of the
-		// definition). `eval` is exclusive within a session, draws call+result as one cell, and its
-		// approval dialog shows the code like the native tool's does.
+		// definition). `eval` is exclusive within a session, draws call+result as one cell, its
+		// approval dialog shows the code like the native tool's does, and `docTopics` backs `xd://eval/<topic>`.
 		...({
 			concurrency: "exclusive",
 			mergeCallAndResult: true,
+			docTopics: () => buildDocTopics(pi.pi as DocHost, agentIdOf(latestCtx), deps.rDocs),
 			formatApprovalDetails: (args: unknown) => {
 				if (typeof args !== "object" || args === null) return undefined;
 				const language = "language" in args && typeof args.language === "string" ? args.language : "?";

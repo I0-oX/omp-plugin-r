@@ -134,9 +134,56 @@ local({
     }
     invisible(NULL)
   }
+  # data.frames print as a compact typed table (column names, <type> row, rule, rows, row count),
+  # like a notebook table. Anything unusual (extra print args, subclasses such as tibble, list or
+  # matrix columns, custom row names, wider than options(width)) goes to base R's own method.
+  omp$orig_df <- get("print.data.frame", envir = baseenv())
+  omp$type <- function(col) {
+    if (is.factor(col)) "fct"
+    else if (inherits(col, "Date")) "date"
+    else if (inherits(col, "POSIXct")) "dttm"
+    else if (is.integer(col)) "int"
+    else if (is.double(col)) "dbl"
+    else if (is.character(col)) "chr"
+    else if (is.logical(col)) "lgl"
+    else "?"
+  }
+  omp$print_df <- function(x, ...) {
+    plain <- nargs() == 1L && identical(class(x), "data.frame") && ncol(x) > 0L && nrow(x) > 0L &&
+      .row_names_info(x) < 0L && all(vapply(x, function(col) !is.matrix(col) && !is.list(col), NA))
+    if (plain) {
+      types <- paste0("<", vapply(x, omp$type, ""), ">")
+      shown <- min(nrow(x), 20L)
+      cells <- lapply(x, function(col) format(col[seq_len(shown)], justify = "right"))
+      w <- pmax(nchar(names(x), type = "width"), nchar(types, type = "width"),
+                vapply(cells, function(cl) max(nchar(cl, type = "width")), 1L))
+      if (sum(w) + 2L * (length(w) - 1L) <= getOption("width", 80L)) {
+        pad <- function(s, k) paste0(strrep(" ", pmax(0L, k - nchar(s, type = "width"))), s)
+        line <- function(v) paste(mapply(pad, v, w), collapse = "  ")
+        cat(line(names(x)), "\n", line(types), "\n",
+            strrep(intToUtf8(9472L), sum(w) + 2L * (length(w) - 1L)), "\n", sep = "")
+        for (i in seq_len(shown)) cat(line(vapply(cells, function(cl) cl[i], "")), "\n", sep = "")
+        cat(if (nrow(x) > shown) sprintf("... %d more rows, %d rows total", nrow(x) - shown, nrow(x))
+            else sprintf("%d row%s", nrow(x), if (nrow(x) == 1L) "" else "s"), "\n", sep = "")
+        return(invisible(x))
+      }
+    }
+    omp$orig_df(x, ...)
+  }
+  # S3 dispatch finds base's own print.data.frame before any registered method, so replace the binding.
+  local({
+    unlockBinding("print.data.frame", baseenv())
+    assign("print.data.frame", omp$print_df, envir = baseenv())
+    lockBinding("print.data.frame", baseenv())
+  })
   # Reached through an option, not the search path, so detach() or rm() in user code cannot remove it.
   options(.omp = omp)
 })
+# Force R's lazy loading of the code a cell touches now: an interrupt that lands inside a lazy-load
+# promise leaves it broken ("promise already under evaluation") for the rest of the session.
+invisible(capture.output(withCallingHandlers(tryCatch(
+  source(exprs = quote({ 1 + 1; print(data.frame(a = 1L)); Sys.sleep(0) }), local = globalenv(), echo = FALSE, print.eval = TRUE, keep.source = FALSE),
+  error = function(e) NULL, warning = function(w) NULL), warning = function(w) invokeRestart("muffleWarning"))))
 cat("<<OMP-READY>>\n")
 flush(stdout())
 `;

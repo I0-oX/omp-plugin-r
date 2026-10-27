@@ -168,6 +168,19 @@ describe.skipIf(!hasR)("R engine", () => {
 		}
 	});
 
+	test("data.frames print as a typed table; unusual ones keep base R's layout", async () => {
+		const s = new Session(rEngine);
+		try {
+			const t = await run(s, "data.frame(x = 0:1, m = c(0, 0.5))");
+			const rows = t.output.split("\n").map(l => l.trim().split(/\s+/).join(" "));
+			expect([rows[0], rows[1], rows[3], rows[4], rows[5]]).toEqual(["x m", "<int> <dbl>", "0 0.0", "1 0.5", "2 rows"]);
+			expect((await run(s, "head(mtcars, 2)")).output).toContain("Mazda RX4");
+			expect((await run(s, "print(data.frame(a = 1.23456), digits = 2)")).output).toContain("1.2");
+		} finally {
+			s.reset();
+		}
+	});
+
 	test("an interrupt during interpreter start-up waits for readiness instead of killing R", async () => {
 		for (const timeoutMs of [5, 150]) {
 			const s = new Session(rEngine, { interruptGraceMs: 5000 });

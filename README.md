@@ -49,6 +49,7 @@ How it hooks in:
 
 - **State persists** across calls: objects, loaded packages, options.
 - **Auto-print** like the console: `summary(fit)`, data frames, ggplot objects.
+- **data.frames** auto-print as a compact typed table (column names, `<int>`/`<dbl>`/`<chr>` row, rule, up to 20 rows, row count). Frames with custom row names, subclasses (tibble, data.table), list/matrix columns, extra `print()` arguments, or wider than `options(width)` keep base R's layout.
 - **Plots** (base, ggplot2, lattice) are returned as PNG images, at most 8 per call. Each plot gets a session-wide unique name, so `dev.off()` never makes a later plot overwrite an earlier one. Only the plot devices the plugin opened are closed at the end of a call; a `pdf()` or `svg()` you open stays open across calls.
 - **Errors and warnings** come back as text; an error aborts only that call. Warnings honour `options(warn)` (`-1` silences, `2` turns them into errors) and are written to stderr, so `capture.output()` and `sink()` do not swallow them.
 - Runs in the session's working directory, so `read.csv("data.csv")` works. Files the call creates or modifies there are listed after the output (`[files written: out.csv]`), skipping dot-directories, `node_modules`, `renv` and similar, with the scan capped at 5000 entries.

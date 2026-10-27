@@ -1,6 +1,6 @@
 {
 	"name": "omp-plugin-r",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "omp plugin: persistent R session (eval language \"r\", or an r tool as fallback) for statistics, modelling and plots",
 	"type": "module",
 	"license": "MIT",

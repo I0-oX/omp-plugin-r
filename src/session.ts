@@ -17,6 +17,8 @@ export interface Run {
 	token: string;
 	/** Directory where the engine should drop PNG plots (sorted by name). */
 	plotDir: string;
+	/** Significant digits for this cell (R `options(digits=)`); undefined = session's current value. */
+	digits?: number;
 }
 
 /** A persistent interpreter that can be driven through stdin. */
@@ -71,6 +73,8 @@ export interface RunOptions {
 	signal?: AbortSignal;
 	/** Milliseconds; 0/undefined = no deadline. */
 	timeoutMs?: number;
+	/** Significant digits printed for this cell (R `options(digits=)`); the session's current value is restored afterwards. */
+	digits?: number;
 	/** Called with the output so far while the cell runs. */
 	onOutput?: (text: string) => void;
 }
@@ -287,7 +291,7 @@ export class Session {
 			const plotDir = join(dir, "plots");
 			await mkdir(plotDir);
 			const token = randomBytes(8).toString("hex");
-			const stdin = await this.engine.stdinFor({ dir, script, cwd: opts.cwd, token, plotDir });
+			const stdin = await this.engine.stdinFor({ dir, script, cwd: opts.cwd, token, plotDir, digits: opts.digits });
 
 			const { output, status, interrupted } = await this.#await(proc, token, stdin, startedAt, opts);
 			const plots: Buffer[] = [];

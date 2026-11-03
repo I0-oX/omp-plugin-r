@@ -101,6 +101,12 @@ local({
     a <- readLines(ctl, encoding = "UTF-8", warn = FALSE)
     status <- 0L
     on.exit(omp$end(a[2], status))
+    digits <- suppressWarnings(as.integer(a[5]))
+    if (length(digits) == 1L && !is.na(digits)) {
+      old <- getOption("digits")
+      options(digits = digits)
+      on.exit(options(digits = old), add = TRUE)
+    }
     cwd <- omp$unhex(a[4])
     omp$plotdir <- a[3]
     moved <- tryCatch({ setwd(cwd); TRUE }, error = function(e) FALSE)
@@ -209,7 +215,7 @@ export const rEngine: Engine = {
 	async stdinFor(run) {
 		const ctl = join(run.dir, "ctl.txt");
 		const cwdHex = Buffer.from(run.cwd, "utf8").toString("hex");
-		await writeFile(ctl, [run.script, run.token, run.plotDir, cwdHex].join("\n"), "utf8");
+		await writeFile(ctl, [run.script, run.token, run.plotDir, cwdHex, run.digits ?? ""].join("\n"), "utf8");
 		// Interrupts that land outside the cell must not reach the top level, where
 		// non-interactive R would exit; the handler still ends the cell with its marker.
 		const omp = 'getOption(".omp")';

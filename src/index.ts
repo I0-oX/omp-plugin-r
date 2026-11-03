@@ -15,6 +15,7 @@ interface RParams {
 	code: string;
 	timeout?: number;
 	reset?: boolean;
+	digits?: number;
 }
 
 async function filesLine(cwd: string, startedAt: number | undefined): Promise<{ line?: string; files: string[] }> {
@@ -66,6 +67,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				signal,
 				timeoutMs: (params.timeout ?? DEFAULT_TIMEOUT_S) * 1000,
+				digits: params.digits,
 				onOutput: text => {
 					latest = text;
 					if (flushTimer) return;
@@ -153,6 +155,13 @@ export default function statsPlugin(pi: ExtensionAPI) {
 					.optional()
 					.describe(`Seconds before the call is interrupted (default ${DEFAULT_TIMEOUT_S}, 0 = no limit)`),
 				reset: z.boolean().optional().describe("Discard the existing R session (all objects) before running"),
+				digits: z
+					.number()
+					.int()
+					.min(1)
+					.max(22)
+					.optional()
+					.describe("Significant digits printed for this call (R options(digits=)); session's current value (normally 7) when omitted"),
 			}),
 
 			async execute(_toolCallId, params, signal, onUpdate, ctx) {

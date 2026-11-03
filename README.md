@@ -46,6 +46,7 @@ How it hooks in:
 | `code` | R code to run; may span multiple lines. |
 | `timeout` | Seconds before the call is interrupted. Default 120, `0` = no limit. |
 | `reset` | Discard the existing R session before running. |
+| `digits` | Significant digits printed for this call (R `options(digits=)`, 1-22); session's current value (normally 7) when omitted, restored afterwards. |
 
 - **State persists** across calls: objects, loaded packages, options.
 - **Auto-print** like the console: `summary(fit)`, data frames, ggplot objects.

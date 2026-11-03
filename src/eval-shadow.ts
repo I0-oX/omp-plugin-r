@@ -26,12 +26,13 @@ interface EvalArgs {
 	title?: string;
 	timeout?: number;
 	reset?: boolean;
+	digits?: number;
 }
 
 export interface EvalShadowDeps {
 	/** Runs one R cell; same function as the `r` tool. */
 	executeR(
-		params: { code: string; timeout?: number; reset?: boolean },
+		params: { code: string; timeout?: number; reset?: boolean; digits?: number },
 		signal: AbortSignal | undefined,
 		onUpdate: never,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
@@ -186,13 +187,20 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 				.optional()
 				.describe(`Cell deadline in seconds; 0 disables it. Default ${deps.defaultTimeoutS} for r.`),
 			reset: z.boolean().optional().describe("Wipe only this language's kernel."),
+			digits: z
+				.number()
+				.int()
+				.min(1)
+				.max(22)
+				.optional()
+				.describe('Significant digits printed for "r" cells (R options(digits=)); session\'s current value (normally 7) when omitted.'),
 		}),
 
 		async execute(_toolCallId, params: EvalArgs, signal, onUpdate, toolCtx) {
 			latestCtx = toolCtx;
 			if (params.language === "r") {
 				return deps.executeR(
-					{ code: params.code, timeout: params.timeout, reset: params.reset },
+					{ code: params.code, timeout: params.timeout, reset: params.reset, digits: params.digits },
 					signal,
 					onUpdate as never,
 					toolCtx,

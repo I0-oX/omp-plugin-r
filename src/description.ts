@@ -14,7 +14,8 @@ export function describe(idleMinutes: number): string {
 - \`digits\` sets R \`options(digits=)\` (1-22) for this call only; the session's current value (normally 7) is restored afterwards.
 - Whenever the R process was lost, the next call says so.
 - Never write code that swallows interrupts (\`tryCatch(..., interrupt=)\`) or loops forever: a timeout then kills R and every object is lost. Save costly objects with \`saveRDS()\` before long or risky code, and use a \`timeout\` longer than the expected run.
-- R's stdin is the tool's control channel: do not read from stdin (\`readLines("stdin")\`, \`scan()\`); it blocks until the timeout and then kills R, losing every object.`;
+- R's stdin is the tool's control channel: do not read from stdin (\`readLines("stdin")\`, \`scan()\`); it blocks until the timeout and then kills R, losing every object.
+- Do not write comments in R code.`;
 }
 
 /** Compact R notes appended to the native `eval` description (kept short: eval is always in the prompt). */
@@ -23,5 +24,6 @@ export function describeForEval(idleMinutes: number): string {
 	return `Persistent R session for statistics, modelling and plots. State (objects, packages, options) persists until \`reset: true\` or the process stops; top-level values auto-print like the console; plots (base, ggplot2, lattice) return as PNG.
 - Errors and warnings come back as text; an error aborts only that cell. Runs in the session cwd; files the cell writes are listed after the output.
 - \`timeout\` default ${DEFAULT_TIMEOUT_S} s. On timeout/cancel R is interrupted like Ctrl-C and keeps its objects; code that swallows interrupts (\`tryCatch(..., interrupt=)\`) or never returns gets killed and loses them, so \`saveRDS()\` costly objects first.${idle} A lost process is reported on the next call. \`digits\` sets R \`options(digits=)\` (1-22) for the call only; the session's current value (normally 7) is restored afterwards.
-- Never read stdin (\`readLines("stdin")\`, \`scan()\`): it hangs, then the timeout kills R and loses every object.`;
+- Never read stdin (\`readLines("stdin")\`, \`scan()\`): it hangs, then the timeout kills R and loses every object.
+- Do not write comments in R code.`;
 }

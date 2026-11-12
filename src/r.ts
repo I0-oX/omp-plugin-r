@@ -102,11 +102,7 @@ local({
     status <- 0L
     on.exit(omp$end(a[2], status))
     digits <- suppressWarnings(as.integer(a[5]))
-    if (length(digits) == 1L && !is.na(digits)) {
-      old <- getOption("digits")
-      options(digits = digits)
-      on.exit(options(digits = old), add = TRUE)
-    }
+    if (length(digits) == 1L && !is.na(digits)) options(digits = digits)
     cwd <- omp$unhex(a[4])
     omp$plotdir <- a[3]
     moved <- tryCatch({ setwd(cwd); TRUE }, error = function(e) FALSE)

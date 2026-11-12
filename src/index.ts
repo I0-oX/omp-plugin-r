@@ -161,7 +161,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 					.min(1)
 					.max(22)
 					.optional()
-					.describe("Significant digits printed for this call (R options(digits=)); session's current value (normally 7) when omitted"),
+					.describe("Printed significant digits (1-22); kept until changed. Default 7."),
 			}),
 
 			async execute(_toolCallId, params, signal, onUpdate, ctx) {

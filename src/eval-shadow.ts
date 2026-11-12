@@ -193,7 +193,7 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 				.min(1)
 				.max(22)
 				.optional()
-				.describe('Significant digits printed for "r" cells (R options(digits=)); session\'s current value (normally 7) when omitted.'),
+				.describe('R only: printed significant digits (1-22); kept until changed. Default 7.'),
 		}),
 
 		async execute(_toolCallId, params: EvalArgs, signal, onUpdate, toolCtx) {

@@ -181,6 +181,16 @@ describe.skipIf(!hasR)("R engine", () => {
 		}
 	});
 
+	test("digits applies to the call and stays set until changed", async () => {
+		const s = new Session(rEngine);
+		try {
+			expect((await s.run("getOption('digits')", { cwd: process.cwd(), timeoutMs: 60_000, digits: 12 })).output).toContain("12");
+			expect((await run(s, "getOption('digits')")).output).toContain("12");
+		} finally {
+			s.reset();
+		}
+	});
+
 	test("an interrupt during interpreter start-up waits for readiness instead of killing R", async () => {
 		for (const timeoutMs of [5, 150]) {
 			const s = new Session(rEngine, { interruptGraceMs: 5000 });

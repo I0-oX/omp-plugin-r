@@ -17,7 +17,7 @@ export interface Run {
 	token: string;
 	/** Directory where the engine should drop PNG plots (sorted by name). */
 	plotDir: string;
-	/** Significant digits for this cell (R `options(digits=)`); undefined = session's current value. */
+	/** Significant digits to set (R `options(digits=)`); undefined = leave unchanged. */
 	digits?: number;
 }
 
@@ -73,7 +73,7 @@ export interface RunOptions {
 	signal?: AbortSignal;
 	/** Milliseconds; 0/undefined = no deadline. */
 	timeoutMs?: number;
-	/** Significant digits printed for this cell (R `options(digits=)`); the session's current value is restored afterwards. */
+	/** Significant digits to set (R `options(digits=)`) for the session; undefined = leave unchanged. */
 	digits?: number;
 	/** Called with the output so far while the cell runs. */
 	onOutput?: (text: string) => void;

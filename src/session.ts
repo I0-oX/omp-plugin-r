@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -62,8 +62,6 @@ export interface RunResult {
 	plots: Buffer[];
 	/** Out-of-band remarks (e.g. the session was restarted). */
 	notices: string[];
-	/** Filesystem time (ms) just before the cell ran; files with a newer mtime were written by it. */
-	startedAt: number;
 	/** Why the cell was interrupted (timeout or cancel); the interpreter survived with its state. */
 	interrupted?: string;
 }
@@ -84,8 +82,6 @@ export class SessionLost extends Error {
 	constructor(
 		message: string,
 		readonly output: string,
-		/** Set when the cell had started; see `RunResult.startedAt`. */
-		readonly startedAt?: number,
 	) {
 		super(message);
 	}
@@ -286,19 +282,17 @@ export class Session {
 		try {
 			const script = join(dir, `cell${this.engine.scriptExt}`);
 			await writeFile(script, code.endsWith("\n") ? code : `${code}\n`, "utf8");
-			// The script's mtime comes from the same kernel clock as the mtimes of files the cell writes.
-			const startedAt = (await stat(script)).mtimeMs;
 			const plotDir = join(dir, "plots");
 			await mkdir(plotDir);
 			const token = randomBytes(8).toString("hex");
 			const stdin = await this.engine.stdinFor({ dir, script, cwd: opts.cwd, token, plotDir, digits: opts.digits });
 
-			const { output, status, interrupted } = await this.#await(proc, token, stdin, startedAt, opts);
+			const { output, status, interrupted } = await this.#await(proc, token, stdin, opts);
 			const plots: Buffer[] = [];
 			for (const name of (await readdir(plotDir)).sort()) {
 				if (name.toLowerCase().endsWith(".png")) plots.push(await readFile(join(plotDir, name)));
 			}
-			return { output, status, plots, notices, startedAt, interrupted };
+			return { output, status, plots, notices, interrupted };
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -308,14 +302,13 @@ export class Session {
 		proc: ChildProcess,
 		token: string,
 		stdin: string,
-		startedAt: number,
 		opts: RunOptions,
 	): Promise<{ output: string; status: number; interrupted?: string }> {
 		// Aborted while the cell was being prepared: it never ran, so the session is untouched.
 		opts.signal?.throwIfAborted();
 		if (this.#proc !== proc) {
 			// The process died while the cell was being prepared; nothing will ever answer.
-			return Promise.reject(new SessionLost(this.#lostReason ?? `${this.engine.name} is not running`, "", startedAt));
+			return Promise.reject(new SessionLost(this.#lostReason ?? `${this.engine.name} is not running`, ""));
 		}
 		const marker = new RegExp(`<<OMP-END ${token}\\s+(-?\\d+)\\s*>>`);
 		const out = new BoundedOutput();
@@ -353,7 +346,7 @@ export class Session {
 			settle();
 			const lost = `${interrupted}; ${this.engine.name} did not stop within ${grace / 1000}s of an interrupt and was killed`;
 			if (this.#proc === proc) this.#terminate(lost);
-			reject(new SessionLost(lost, out.text(), startedAt));
+			reject(new SessionLost(lost, out.text()));
 		};
 		const onAbort = () => interrupt(`${this.engine.name} cell cancelled`);
 
@@ -371,7 +364,7 @@ export class Session {
 		};
 		this.#onExit = why => {
 			settle();
-			reject(new SessionLost(interrupted ? `${interrupted}; ${why}` : why, out.text(), startedAt));
+			reject(new SessionLost(interrupted ? `${interrupted}; ${why}` : why, out.text()));
 		};
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		if (opts.timeoutMs && opts.timeoutMs > 0) {

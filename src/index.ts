@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { findChangedFiles } from "./changed-files";
+import { type FileSnapshot, findChangedFiles, snapshotFiles } from "./changed-files";
 import { DEFAULT_TIMEOUT_S, describe, describeForEval } from "./description";
 import { shadowEval } from "./eval-shadow";
 import { findR, rEngine } from "./r";
@@ -18,9 +18,9 @@ interface RParams {
 	digits?: number;
 }
 
-async function filesLine(cwd: string, startedAt: number | undefined): Promise<{ line?: string; files: string[] }> {
-	if (startedAt === undefined) return { files: [] };
-	const { paths, partial } = await findChangedFiles(cwd, startedAt);
+async function filesLine(cwd: string, before: FileSnapshot | undefined): Promise<{ line?: string; files: string[] }> {
+	if (!before) return { files: [] };
+	const { paths, partial } = await findChangedFiles(cwd, before);
 	if (paths.length === 0) return { files: [] };
 	const shown = paths.slice(0, MAX_FILES_SHOWN).join(", ");
 	const more = paths.length > MAX_FILES_SHOWN ? ` (+${paths.length - MAX_FILES_SHOWN} more)` : "";
@@ -60,9 +60,11 @@ export default function statsPlugin(pi: ExtensionAPI) {
 			lastUpdate = Date.now();
 			onUpdate?.({ content: [{ type: "text", text }], details: { output: text } satisfies RDetails });
 		};
+		let before: FileSnapshot | undefined;
 		try {
 			// Extension tools get no spinner frames; one empty partial result switches the card from "pending" to "running".
 			push("");
+			before = await snapshotFiles(ctx.cwd);
 			const result = await session.run(params.code, {
 				cwd: ctx.cwd,
 				signal,
@@ -92,7 +94,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 			if (result.plots.length > shown.length) {
 				notes.push(`[${result.plots.length - shown.length} further plot(s) not shown]`);
 			}
-			const { line, files } = await filesLine(ctx.cwd, result.startedAt);
+			const { line, files } = await filesLine(ctx.cwd, before);
 			if (line) notes.push(line);
 			const text = [
 				...result.notices,
@@ -120,7 +122,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 			if (err instanceof SessionLost) {
 				const output = err.output.trim();
 				const notes = [`${err.message}. The R session was discarded; its objects are gone.`];
-				const { line, files } = await filesLine(ctx.cwd, err.startedAt);
+				const { line, files } = await filesLine(ctx.cwd, before);
 				if (line) notes.push(line);
 				const details: RDetails = { output, notes, durationMs: Date.now() - startedMs, files };
 				return {

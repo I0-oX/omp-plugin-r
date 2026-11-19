@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { findR, rEngine } from "../src/r";
-import { findChangedFiles } from "../src/changed-files";
+import { findChangedFiles, snapshotFiles } from "../src/changed-files";
 import { Session, SessionLost } from "../src/session";
 
 const hasR = findR() !== undefined;
@@ -128,13 +128,14 @@ describe.skipIf(!hasR)("R engine", () => {
 		}
 	});
 
-	test("startedAt identifies files the cell wrote", async () => {
+	test("a snapshot taken before the cell identifies the files it wrote", async () => {
 		const dir = realpathSync(mkdtempSync(join(tmpdir(), "omp-r-files-")));
 		writeFileSync(join(dir, "old.csv"), "a\n");
 		const s = new Session(rEngine);
 		try {
-			const r = await s.run('write.csv(mtcars, "new.csv")', { cwd: dir, timeoutMs: 60_000 });
-			expect((await findChangedFiles(dir, r.startedAt)).paths).toEqual(["new.csv"]);
+			const before = await snapshotFiles(dir);
+			await s.run('write.csv(mtcars, "new.csv")', { cwd: dir, timeoutMs: 60_000 });
+			expect((await findChangedFiles(dir, before)).paths).toEqual(["new.csv"]);
 		} finally {
 			s.reset();
 		}

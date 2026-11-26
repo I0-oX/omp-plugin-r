@@ -49,14 +49,18 @@ export interface Rows {
 	invalidate?(): void;
 }
 
-/** The slice of omp's `Theme` used here. */
+/**
+ * The extension theme omp hands to renderers: pi-tui's `Theme`, not the internal one.
+ * It exposes semantic `fg`/`bgSgr` colors and a `symbols` bundle; `styledSymbol`, `boxRound`
+ * and `getBgAnsi` from the built-in renderers are not part of it.
+ */
 interface Theme {
 	fg(color: string, text: string): string;
-	getBgAnsi(color: string): string;
-	styledSymbol(key: string, color: string): string;
-	boxRound: { horizontal: string; vertical: string; topLeft: string; topRight: string; bottomLeft: string; bottomRight: string; teeRight: string; teeLeft: string };
-	sep: { dot: string };
-	spinnerFrames: string[];
+	bgSgr(color: string): string;
+	symbols: {
+		box: { horizontal: string; vertical: string; topLeft: string; topRight: string; bottomLeft: string; bottomRight: string; teeRight: string; teeLeft: string };
+		spinnerFrames: string[];
+	};
 }
 
 type State = "pending" | "running" | "success" | "error";
@@ -76,14 +80,15 @@ function formatDuration(ms: number): string {
 function statusIcon(state: State, theme: Theme, spinnerFrame?: number): string {
 	switch (state) {
 		case "success":
-			return theme.styledSymbol("status.done", "success");
+			return theme.fg("success", "✔");
 		case "error":
-			return theme.styledSymbol("status.error", "error");
+			return theme.fg("error", "✘");
 		case "pending":
-			return theme.styledSymbol("status.pending", "muted");
-		case "running":
-			if (spinnerFrame !== undefined) return theme.spinnerFrames[spinnerFrame % theme.spinnerFrames.length];
-			return theme.styledSymbol("status.running", "accent");
+			return theme.fg("muted", "⏳");
+		case "running": {
+			const frames = theme.symbols.spinnerFrames;
+			return frames.length > 0 ? frames[(spinnerFrame ?? 0) % frames.length] : theme.fg("accent", "…");
+		}
 	}
 }
 
@@ -94,13 +99,12 @@ interface Section {
 
 /** Same layout as omp's `renderOutputBlock`: header bar, sections split by labelled bars, bottom bar. */
 function frame(header: string, meta: string | undefined, state: State, sections: Section[], width: number, theme: Theme): string[] {
-	const { horizontal: h, vertical: v } = theme.boxRound;
+	const box = theme.symbols.box;
+	const { horizontal: h, vertical: v } = box;
 	const cap = h.repeat(3);
 	const borderColor = state === "error" ? "error" : state === "running" || state === "pending" ? "accent" : "dim";
 	const border = (text: string) => theme.fg(borderColor, text);
-	const bgAnsi = theme.getBgAnsi(
-		state === "success" ? "toolSuccessBg" : state === "error" ? "toolErrorBg" : "toolPendingBg",
-	);
+	const bgAnsi = theme.bgSgr(state === "success" ? "toolSuccessBg" : state === "error" ? "toolErrorBg" : "toolPendingBg");
 	// Re-apply the background after inner SGR resets so it survives mid-line.
 	const paint = (text: string) =>
 		`${bgAnsi}${text.replace(/\x1b\[(?:0)?m/g, m => `${m}${bgAnsi}`).replace(/\x1b\[49m/g, m => `${m}${bgAnsi}`)}\x1b[49m`;
@@ -119,9 +123,9 @@ function frame(header: string, meta: string | undefined, state: State, sections:
 		return `${border(leftGlyphs)}${trimmed}${border(h.repeat(fill))}${border(right)}`;
 	};
 
-	const rows = [bar(theme.boxRound.topLeft, theme.boxRound.topRight, [header, meta].filter(Boolean).join(theme.sep.dot))];
+	const rows = [bar(box.topLeft, box.topRight, [header, meta].filter(Boolean).join(" · "))];
 	for (const section of sections) {
-		if (section.label) rows.push(bar(theme.boxRound.teeRight, theme.boxRound.teeLeft, section.label));
+		if (section.label) rows.push(bar(box.teeRight, box.teeLeft, section.label));
 		for (const line of section.lines.flatMap(l => l.split("\n"))) {
 			for (const wrapped of wrap(line.trimEnd(), contentWidth)) {
 				// `wrap` breaks a styled line without closing its SGR; close it so the padding and
@@ -130,7 +134,7 @@ function frame(header: string, meta: string | undefined, state: State, sections:
 			}
 		}
 	}
-	rows.push(bar(theme.boxRound.bottomLeft, theme.boxRound.bottomRight));
+	rows.push(bar(box.bottomLeft, box.bottomRight));
 	return rows.map(fit);
 }
 

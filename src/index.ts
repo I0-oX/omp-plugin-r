@@ -3,7 +3,7 @@ import { type FileSnapshot, findChangedFiles, snapshotFiles } from "./changed-fi
 import { DEFAULT_TIMEOUT_S, describe, describeForEval } from "./description";
 import { shadowEval } from "./eval-shadow";
 import { findR, rEngine } from "./r";
-import { createRenderers, type RDetails } from "./render";
+import { createEvalRenderers, createRenderers, type RDetails } from "./render";
 import { EngineUnavailable, Session, SessionLost } from "./session";
 
 const DEFAULT_IDLE_MINUTES = 30;
@@ -141,7 +141,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 		}
 	}
 
-	const renderers = createRenderers(pi.pi as never);
+	const renderers = createRenderers();
 
 	function registerRTool() {
 		pi.registerTool({
@@ -191,6 +191,7 @@ export default function statsPlugin(pi: ExtensionAPI) {
 				rDocs: describe(idleMinutes),
 				defaultTimeoutS: DEFAULT_TIMEOUT_S,
 				renderers: renderers as never,
+				evalRenderers: createEvalRenderers() as never,
 			});
 		} catch (err) {
 			if (ctx.hasUI) ctx.ui.notify(`omp-plugin-r: eval shadow failed (${err}); using the r tool`, "warning");

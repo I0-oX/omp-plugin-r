@@ -1,14 +1,15 @@
 /**
- * TUI rendering for the `r` tool, modelled on omp's `eval` cells: a rounded frame with a header
- * (status icon, title, duration), the highlighted code, and the output in a section below it;
- * collapsed output keeps a tail preview and ctrl+o expands it.
+ * TUI rendering for the `r` tool and for non-R `eval` cells, modelled on omp's `eval` cells: a
+ * rounded frame with a header (status icon, title, duration), the highlighted code, and the
+ * output in a section below it; collapsed output keeps a tail preview and ctrl+o expands it.
  *
- * omp does not export its frame helpers (`renderCodeCell`, `markFramedBlockComponent`) to
- * extensions, so the frame is drawn here from the pieces it does expose: the `Theme` handed to
- * the renderer, `@oh-my-pi/pi-tui`, and `pi.pi.highlightCode` / `truncateToVisualLines`.
+ * omp 19.2 dropped the pi-tui component API from the extension surface: `@oh-my-pi/pi-tui` now
+ * exports reactive nodes, and the string helpers moved to `@oh-my-pi/pi-tui/text/width`. A rows
+ * object (`{ render(width) }`) is still the supported escape hatch, so the frame is drawn here
+ * from the theme handed to the renderer plus those width helpers.
  */
-import { padding, replaceTabs, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { highlightCode } from "@oh-my-pi/pi-coding-agent";
+import { replaceTabs, spaces, truncate, visibleWidth, wrap } from "@oh-my-pi/pi-tui/text/width";
 
 /** Collapsed output keeps this many trailing rows, like eval's default preview. */
 const PREVIEW_LINES = 10;
@@ -42,6 +43,12 @@ interface RenderResult {
 	isError?: boolean;
 }
 
+/** A rows object: the render contract still accepted from extension renderers. */
+export interface Rows {
+	render(width: number): readonly string[];
+	invalidate?(): void;
+}
+
 /** The slice of omp's `Theme` used here. */
 interface Theme {
 	fg(color: string, text: string): string;
@@ -50,17 +57,6 @@ interface Theme {
 	boxRound: { horizontal: string; vertical: string; topLeft: string; topRight: string; bottomLeft: string; bottomRight: string; teeRight: string; teeLeft: string };
 	sep: { dot: string };
 	spinnerFrames: string[];
-}
-
-/** The slice of `pi.pi` used here. */
-export interface Host {
-	highlightCode(code: string, lang?: string): string[];
-	truncateToVisualLines(
-		text: string,
-		maxVisualLines: number,
-		width: number,
-	): { visualLines: string[]; skippedCount: number };
-	askToolRenderer: { renderCall(args: unknown, options: unknown, theme: unknown): object };
 }
 
 type State = "pending" | "running" | "success" | "error";
@@ -108,7 +104,7 @@ function frame(header: string, meta: string | undefined, state: State, sections:
 	// Re-apply the background after inner SGR resets so it survives mid-line.
 	const paint = (text: string) =>
 		`${bgAnsi}${text.replace(/\x1b\[(?:0)?m/g, m => `${m}${bgAnsi}`).replace(/\x1b\[49m/g, m => `${m}${bgAnsi}`)}\x1b[49m`;
-	const fit = (line: string) => paint(line + padding(Math.max(0, width - visibleWidth(line))));
+	const fit = (line: string) => paint(line + spaces(Math.max(0, width - visibleWidth(line))));
 
 	const contentWidth = Math.max(1, width - 2 * visibleWidth(v) - 2);
 
@@ -118,7 +114,7 @@ function frame(header: string, meta: string | undefined, state: State, sections:
 			const fill = Math.max(0, width - visibleWidth(leftGlyphs) - visibleWidth(right));
 			return `${border(leftGlyphs)}${border(h.repeat(fill))}${border(right)}`;
 		}
-		const trimmed = truncateToWidth(` ${label} `, Math.max(0, width - visibleWidth(leftGlyphs) - visibleWidth(right)));
+		const trimmed = truncate(` ${label} `, Math.max(0, width - visibleWidth(leftGlyphs) - visibleWidth(right)));
 		const fill = Math.max(0, width - visibleWidth(leftGlyphs) - visibleWidth(trimmed) - visibleWidth(right));
 		return `${border(leftGlyphs)}${trimmed}${border(h.repeat(fill))}${border(right)}`;
 	};
@@ -127,8 +123,10 @@ function frame(header: string, meta: string | undefined, state: State, sections:
 	for (const section of sections) {
 		if (section.label) rows.push(bar(theme.boxRound.teeRight, theme.boxRound.teeLeft, section.label));
 		for (const line of section.lines.flatMap(l => l.split("\n"))) {
-			for (const wrapped of wrapTextWithAnsi(line.trimEnd(), contentWidth)) {
-				rows.push(`${border(v)} ${wrapped}${padding(Math.max(0, contentWidth - visibleWidth(wrapped)))} ${border(v)}`);
+			for (const wrapped of wrap(line.trimEnd(), contentWidth)) {
+				// `wrap` breaks a styled line without closing its SGR; close it so the padding and
+				// border take the border colour, not the last span's.
+				rows.push(`${border(v)} ${wrapped}\x1b[0m${spaces(Math.max(0, contentWidth - visibleWidth(wrapped)))} ${border(v)}`);
 			}
 		}
 	}
@@ -143,122 +141,161 @@ function cleanLine(line: string): string {
 	return replaceTabs(i < 0 ? s : s.slice(i + 1));
 }
 
-export function createRenderers(host: Host) {
-	/**
-	 * omp's framed-block marker is a private Symbol; read it off a component omp itself framed.
-	 * Needs the live theme, so it is resolved on first use. Without it omp pads the block and
-	 * tints its background, but the frame still draws.
-	 */
-	let marker: symbol | undefined;
-	let markerResolved = false;
+/** Tail of the visual rows after wrapping at `width`, for the collapsed preview. */
+function tailVisualLines(text: string, maxLines: number, width: number): { visualLines: string[]; skippedCount: number } {
+	if (!text) return { visualLines: [], skippedCount: 0 };
+	const lines = text.split("\n").flatMap(line => wrap(line, width));
+	if (lines.length <= maxLines) return { visualLines: lines, skippedCount: 0 };
+	return { visualLines: lines.slice(-maxLines), skippedCount: lines.length - maxLines };
+}
 
-	function framed(theme: Theme, key: () => string, build: (width: number) => string[]): Component {
-		if (!markerResolved) {
-			markerResolved = true;
-			try {
-				const probe = host.askToolRenderer.renderCall(
-					{ questions: [{ id: "a", question: "q", options: [{ label: "a" }] }] },
-					{ expanded: false },
-					theme,
-				);
-				marker = Object.getOwnPropertySymbols(probe).find(s => s.description === "framedBlockComponent");
-			} catch {
-				// keep the unmarked look
-			}
+interface CellInput {
+	/** Tool title drawn in the header ("R", "Eval"). */
+	label: string;
+	/** Dim text after the title: language and title of an eval cell. */
+	subtitle?: string;
+	code: string;
+	/** Language token for the highlighter (omp's eval tokens differ: `js` -> `javascript`). */
+	highlighter: string;
+}
+
+function cell(
+	input: CellInput,
+	state: State,
+	options: RenderOptions,
+	theme: Theme,
+	width: number,
+	result?: { output: string; durationMs?: number },
+): string[] {
+	const expanded = options.expanded === true;
+
+	// Code: tail window while collapsed, so the newest line stays visible as it streams.
+	const codeLines = input.code.split(/\r?\n/).map(cleanLine);
+	const maxCode = expanded ? codeLines.length : Math.min(codeLines.length, previewWindowRows());
+	const hiddenCode = codeLines.length - maxCode;
+	const code = highlightCode(codeLines.slice(hiddenCode).join("\n"), input.highlighter || undefined, theme as never);
+	if (hiddenCode > 0) {
+		code.unshift(theme.fg("dim", `… ${hiddenCode} earlier line${hiddenCode === 1 ? "" : "s"} (ctrl+o to expand)`));
+	}
+	const sections: Section[] = [{ lines: code }];
+
+	if (result?.output) {
+		const color = state === "error" ? "error" : "toolOutput";
+		const styled = result.output
+			.split("\n")
+			.map(line => theme.fg(color, cleanLine(line)))
+			.join("\n");
+		let lines: string[];
+		let hidden = 0;
+		if (expanded) {
+			lines = styled.split("\n");
+		} else {
+			// Bound by visual rows at the box's inner width so a long line cannot wrap past the budget.
+			const preview = tailVisualLines(styled, Math.min(PREVIEW_LINES, previewWindowRows()), Math.max(1, width - 4));
+			lines = [...preview.visualLines];
+			hidden = preview.skippedCount;
 		}
-		let cached: { key: string; width: number; rows: string[] } | undefined;
-		const component = {
-			render: (width: number): readonly string[] => {
-				const k = key();
-				if (cached && cached.key === k && cached.width === width) return cached.rows;
-				const rows = build(width);
-				cached = { key: k, width, rows };
-				return rows;
-			},
-			invalidate: () => {
-				cached = undefined;
-			},
-		};
-		if (marker) (component as Record<symbol, unknown>)[marker] = true;
-		return component;
+		if (hidden > 0) lines.push(theme.fg("dim", `… ${hidden} more lines (ctrl+o to expand)`));
+		sections.push({ label: theme.fg("toolTitle", "Output"), lines });
 	}
 
-	function cell(
-		args: RenderArgs | undefined,
-		state: State,
-		options: RenderOptions,
-		theme: Theme,
-		width: number,
-		result?: { output: string; durationMs?: number },
-	): string[] {
-		const expanded = options.expanded === true;
+	const icon = statusIcon(state, theme, options.spinnerFrame);
+	const active = state === "pending" || state === "running" ? `${theme.fg("muted", state)} ` : "";
+	const subtitle = input.subtitle ? ` ${theme.fg("dim", input.subtitle)}` : "";
+	const header = `${icon} ${active}${theme.fg("toolTitle", input.label)}${subtitle}`;
+	const meta = result?.durationMs !== undefined ? theme.fg("dim", `(${formatDuration(result.durationMs)})`) : undefined;
+	return frame(header, meta, state, sections, width, theme);
+}
 
-		// Code: tail window while collapsed, so the newest line stays visible as it streams.
-		const codeLines = (args?.code ?? "").split(/\r?\n/).map(cleanLine);
-		const maxCode = expanded ? codeLines.length : Math.min(codeLines.length, previewWindowRows());
-		const hiddenCode = codeLines.length - maxCode;
-		const code = host.highlightCode(codeLines.slice(hiddenCode).join("\n"), "r");
-		if (hiddenCode > 0) {
-			code.unshift(theme.fg("dim", `… ${hiddenCode} earlier line${hiddenCode === 1 ? "" : "s"} (ctrl+o to expand)`));
-		}
-		const sections: Section[] = [{ lines: code }];
+/** Rows object with render caching: same key and width returns the same array, as the engine expects. */
+function framed(key: () => string, build: (width: number) => string[]): Rows {
+	let cached: { key: string; width: number; rows: string[] } | undefined;
+	return {
+		render: (width: number): readonly string[] => {
+			const k = key();
+			if (cached && cached.key === k && cached.width === width) return cached.rows;
+			const rows = build(width);
+			cached = { key: k, width, rows };
+			return rows;
+		},
+		invalidate: () => {
+			cached = undefined;
+		},
+	};
+}
 
-		if (result?.output) {
-			const color = state === "error" ? "error" : "toolOutput";
-			const styled = result.output
-				.split("\n")
-				.map(line => theme.fg(color, cleanLine(line)))
-				.join("\n");
-			let lines: string[];
-			let hidden = 0;
-			if (expanded) {
-				lines = styled.split("\n");
-			} else {
-				// Bound by visual rows at the box's inner width so a long line cannot wrap past the budget.
-				const preview = host.truncateToVisualLines(styled, Math.min(PREVIEW_LINES, previewWindowRows()), Math.max(1, width - 4));
-				lines = [...preview.visualLines];
-				hidden = preview.skippedCount;
-			}
-			if (hidden > 0) lines.push(theme.fg("dim", `… ${hidden} more lines (ctrl+o to expand)`));
-			sections.push({ label: theme.fg("toolTitle", "Output"), lines });
-		}
+function cacheKey(state: State, options: RenderOptions, extra: string): string {
+	return `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${state}|${extra}`;
+}
 
-		const icon = statusIcon(state, theme, options.spinnerFrame);
-		const header =
-			state === "pending" || state === "running"
-				? `${icon} ${theme.fg("muted", state)} ${theme.fg("toolTitle", "R")}`
-				: `${icon} ${theme.fg("toolTitle", "R")}`;
-		const meta = result?.durationMs !== undefined ? theme.fg("dim", `(${formatDuration(result.durationMs)})`) : undefined;
-		return frame(header, meta, state, sections, width, theme);
-	}
-
-	function renderCall(args: RenderArgs, options: RenderOptions, theme: Theme): Component {
+/** Renderers for the `r` tool. */
+export function createRenderers() {
+	function renderCall(args: RenderArgs, options: RenderOptions, theme: Theme): Rows {
 		const code = args?.code ?? "";
+		const state: State = options.spinnerFrame !== undefined ? "running" : "pending";
 		return framed(
-			theme,
-			() => `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${code.length}`,
-			width => cell(args, options.spinnerFrame !== undefined ? "running" : "pending", options, theme, width),
+			() => cacheKey(state, options, `${code.length}`),
+			width => cell({ label: "R", code, highlighter: "r" }, state, options, theme, width),
 		);
 	}
 
-	function renderResult(result: RenderResult, options: RenderOptions, theme: Theme, args?: RenderArgs): Component {
+	function renderResult(result: RenderResult, options: RenderOptions, theme: Theme, args?: RenderArgs): Rows {
 		const details = result.details;
-		// The text content is the LLM-facing rendition; prefer the structured output when present.
-		const output = (details?.output ?? (result.content.find(c => c.type === "text")?.text ?? "")).replace(/\s+$/, "");
+		const output = (details?.output ?? result.content.find(c => c.type === "text")?.text ?? "").replace(/\s+$/, "");
 		const notes = details?.notes ?? [];
 		const state: State = options.isPartial ? "running" : result.isError ? "error" : "success";
 
 		return framed(
-			theme,
-			() => `${options.expanded ? 1 : 0}|${options.spinnerFrame ?? "-"}|${previewWindowRows()}|${state}`,
+			() => cacheKey(state, options, `${output.length}|${notes.length}`),
 			width => {
-				const rows = cell(args, state, options, theme, width, {
+				const rows = cell({ label: "R", code: args?.code ?? "", highlighter: "r" }, state, options, theme, width, {
 					output,
 					durationMs: options.isPartial ? undefined : details?.durationMs,
 				});
-				for (const note of notes) rows.push(truncateToWidth(theme.fg("dim", note), width));
+				for (const note of notes) rows.push(truncate(theme.fg("dim", note), width));
 				return rows;
 			},
+		);
+	}
+
+	return { renderCall, renderResult };
+}
+
+interface EvalArgs {
+	code?: string;
+	language?: string;
+	title?: string;
+}
+
+/**
+ * Renderers for py/js cells of a shadowed `eval`. omp 19.2 no longer exposes the native
+ * `evalToolRenderer`, so these draw the same frame as R cells; the host still appends the result's
+ * image blocks itself.
+ */
+export function createEvalRenderers() {
+	const input = (args?: EvalArgs): CellInput => ({
+		label: "Eval",
+		subtitle: [args?.language, args?.title].filter(Boolean).join(" · ") || undefined,
+		code: args?.code ?? "",
+		highlighter: args?.language === "js" ? "javascript" : args?.language === "ruby" || args?.language === "julia" ? args.language : "python",
+	});
+
+	function renderCall(args: EvalArgs, options: RenderOptions, theme: Theme): Rows {
+		const spec = input(args);
+		const state: State = options.spinnerFrame !== undefined ? "running" : "pending";
+		return framed(
+			() => cacheKey(state, options, `${spec.subtitle ?? ""}|${spec.code.length}`),
+			width => cell(spec, state, options, theme, width),
+		);
+	}
+
+	function renderResult(result: RenderResult, options: RenderOptions, theme: Theme, args?: EvalArgs): Rows {
+		const spec = input(args);
+		const output = (result.details?.output ?? result.content.find(c => c.type === "text")?.text ?? "").replace(/\s+$/, "");
+		const state: State = options.isPartial ? "running" : result.isError ? "error" : "success";
+		return framed(
+			() => cacheKey(state, options, `${spec.subtitle ?? ""}|${output.length}`),
+			width => cell(spec, state, options, theme, width, { output }),
 		);
 	}
 

@@ -44,6 +44,8 @@ export interface EvalShadowDeps {
 	defaultTimeoutS: number;
 	/** R cell renderers, used when `args.language === "r"`. */
 	renderers: Renderer;
+	/** Renderers for the py/js cells forwarded to the native tool. */
+	evalRenderers: Renderer;
 }
 
 interface DocHost {
@@ -130,7 +132,7 @@ export function nativeLanguages(
 
 /**
  * Shadow `eval` with an R-aware copy. Returns whether the shadow was installed; when it was not
- * (eval disabled, already shadowed, native renderer unavailable) the caller keeps R reachable another way.
+ * (eval disabled, already shadowed, native schema unparseable) the caller keeps R reachable another way.
  */
 export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: EvalShadowDeps): Promise<boolean> {
 	const z = pi.zod;
@@ -139,19 +141,9 @@ export async function shadowEval(pi: ExtensionAPI, ctx: ExtensionContext, deps: 
 	// Absent (eval disabled) or already shadowed (this extension earlier, or another one): leave it.
 	if (native?.sourceInfo.source !== "builtin") return false;
 
-	let evalRenderer: Renderer;
-	try {
-		// Dynamic on purpose: a host without this subpath must degrade to "no R in eval", not fail to load.
-		const { evalToolRenderer } = await import("@oh-my-pi/pi-tui/tools/eval");
-		// Structurally the same renderer; the host types its args more narrowly than `Renderer`.
-		evalRenderer = evalToolRenderer as unknown as Renderer;
-	} catch (err) {
-		// Without the native renderer py/js cells would lose their cell UI; keep eval untouched.
-		if (ctx.hasUI) {
-			ctx.ui.notify(`omp-plugin-r: eval language "r" disabled (native eval renderer unavailable: ${err})`, "warning");
-		}
-		return false;
-	}
+	// omp 19.2 stopped exposing the native `evalToolRenderer`, so py/js cells get their own renderers;
+	// the host still appends their image blocks.
+	const evalRenderer = deps.evalRenderers;
 
 	const languagesInfo = nativeLanguages(z, native.parameters);
 	// Unparseable native schema: do not guess which runtimes exist; leave eval alone and use the `r` tool.
